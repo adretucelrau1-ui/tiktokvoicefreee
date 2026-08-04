@@ -1,0 +1,6 @@
+TTS
+torch
+torchvision
+torchaudio
+soundfile
+scipy
