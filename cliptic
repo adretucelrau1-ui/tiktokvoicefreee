@@ -2063,7 +2063,8 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
             log("=" * 60)
         try:
             from xtts_ro import generate_xtts_ro
-            result = generate_xtts_ro(text, output_path=output_path, log=log)
+            tts_speed = globals().get('TTS_SPEED', 1.0)
+            result = generate_xtts_ro(text, output_path=output_path, log=log, speed=tts_speed)
         except Exception as xtts_exc:
             if log:
                 log(f"[TTS] ❌ XTTS RO failed: {xtts_exc}")
@@ -7291,76 +7292,8 @@ class App:
         self._register_lockable("target_language", _lbl_target_lang, self.language_combo, is_combo_readonly=True)
         row += 1
 
-        # OpenAI API Key for natural contextual translations
-        ttk.Label(left_frame, text="OpenAI Key:").grid(row=row, column=0, sticky="e")
-        openai_frame = ttk.Frame(left_frame)
-        openai_frame.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
-        # Try to load saved OpenAI key and model from config file
-        saved_openai_key = ""
-        saved_openai_model = OPENAI_MODEL
-        try:
-            openai_config_path = os.path.join(os.path.dirname(__file__), "openai_config.json")
-            if os.path.exists(openai_config_path):
-                with open(openai_config_path, 'r') as f:
-                    openai_cfg = json.load(f)
-                    saved_openai_key = openai_cfg.get("openai_api_key", "")
-                    if saved_openai_key:
-                        globals()['OPENAI_API_KEY'] = saved_openai_key
-                        print("[OpenAI] API key loaded from openai_config.json")
-                        print("[OpenAI] NOTE: API calls do NOT appear on chat.openai.com")
-                        print("[OpenAI] Check your API usage at: https://platform.openai.com/usage")
-                    saved_model = openai_cfg.get("openai_model", "")
-                    if saved_model:
-                        saved_openai_model = saved_model
-                        globals()['OPENAI_MODEL'] = saved_model
-                        print(f"[OpenAI] Model loaded from config: {saved_model}")
-        except Exception:
-            pass
-        self.openai_key_var = tk.StringVar(value=saved_openai_key)
-        self.openai_key_entry = ttk.Entry(openai_frame, textvariable=self.openai_key_var, show="*", width=22)
-        self.openai_key_entry.pack(side="left", fill="x", expand=True)
-        ttk.Button(openai_frame, text="Set", style='Bordered.TButton', command=self._apply_openai_key, width=4).pack(side="left", padx=(4,0))
-        ttk.Button(openai_frame, text="Save", style='Bordered.TButton', command=self._save_openai_key, width=5).pack(side="left", padx=(4,0))
-        ttk.Button(openai_frame, text="Verify", style='Bordered.TButton', command=self._verify_openai_key, width=6).pack(side="left", padx=(4,0))
-        row += 1
-
-        # OpenAI Model selector for translation
-        _lbl_model = ttk.Label(left_frame, text="Model:")
-        _lbl_model.grid(row=row, column=0, sticky="e")
-        model_frame = ttk.Frame(left_frame)
-        model_frame.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
-        self.openai_model_var = tk.StringVar(value=saved_openai_model)
-        model_choices = [
-            "gpt-4o-mini", "gpt-4o", "gpt-4-turbo", "gpt-3.5-turbo",
-            "gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano",
-            "o4-mini", "o3-mini",
-        ]
-        self.openai_model_combo = ttk.Combobox(model_frame, textvariable=self.openai_model_var,
-                                                values=model_choices, width=18)
-        self.openai_model_combo.pack(side="left", fill="x", expand=True)
-        ttk.Button(model_frame, text="Set", style='Bordered.TButton', command=self._apply_openai_model, width=4).pack(side="left", padx=(4,0))
-        ttk.Button(model_frame, text="Save", style='Bordered.TButton', command=self._save_openai_model, width=5).pack(side="left", padx=(4,0))
-        self._block_widget_scroll(self.openai_model_combo)
-        self._register_lockable("openai_model", _lbl_model, self.openai_model_combo, is_combo_readonly=False)
-        row += 1
-
-        # Custom translation prompt (uses {language} placeholder for selected target language)
-        ttk.Label(left_frame, text="Prompt:").grid(row=row, column=0, sticky="ne")
-        prompt_frame = ttk.Frame(left_frame)
-        prompt_frame.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
-        self.translation_prompt_var = tk.StringVar(value=TRANSLATION_CUSTOM_PROMPT)
-        self.translation_prompt_entry = ttk.Entry(prompt_frame, textvariable=self.translation_prompt_var, width=30)
-        self.translation_prompt_entry.pack(side="left", fill="x", expand=True)
-        ttk.Button(prompt_frame, text="Set", style='Bordered.TButton', command=self._apply_translation_prompt, width=4).pack(side="left", padx=(4,0))
-        row += 1
-        prompt_hint = ttk.Label(left_frame, text="  Use {language} for auto target lang", font=('Segoe UI', 7))
-        prompt_hint.grid(row=row, column=1, columnspan=2, sticky='w', padx=(6,0))
-        row += 1
-
-        self.use_ai_voice_var = tk.BooleanVar(value=USE_AI_VOICE_REPLACEMENT)
-        ttk.Checkbutton(left_frame, text="Replace voice with AI (TTS)", variable=self.use_ai_voice_var,
-                       command=self.on_ai_voice_toggle).grid(row=row, column=0, columnspan=3, sticky="w")
-        row += 1
+        # use_ai_voice_var kept as hidden variable (AI TTS UI removed, XTTS is the only engine)
+        self.use_ai_voice_var = tk.BooleanVar(value=False)
 
         # XTTS RO mode checkbox — replaces GenAI Pro with local Romanian XTTS
         self.use_xtts_ro_var = tk.BooleanVar(value=USE_XTTS_RO)
@@ -7432,57 +7365,6 @@ class App:
         self._register_lockable("tts_fallback_voice", _lbl_fallback_voice, self.tts_fallback_voice_combo, is_combo_readonly=True)
         row += 1
 
-        # API Key input for premium TTS services
-        ttk.Label(left_frame, text="TTS API Key:").grid(row=row, column=0, sticky="e")
-        
-        # Load saved API key
-        saved_api_key = ""
-        try:
-            config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
-            if os.path.exists(config_path):
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-                    saved_api_key = config.get("api_key", "")
-        except Exception:
-            pass
-        
-        self.tts_api_key_var = tk.StringVar(value=saved_api_key)
-        self.tts_api_key_entry = ttk.Entry(left_frame, textvariable=self.tts_api_key_var, show="*", width=30)
-        self.tts_api_key_entry.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
-        row += 1
-        
-        # Button to save API key
-        ttk.Button(left_frame, text="Save API Key", style='Accent.TButton', command=self.on_save_api_key).grid(row=row, column=1, sticky="w", padx=(6,0))
-        row += 1
-        
-        # Custom Voice Management Section
-        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
-        row += 1
-        
-        ttk.Label(left_frame, text="Custom Voice ID:").grid(row=row, column=0, sticky="e")
-        self.custom_voice_id_var = tk.StringVar()
-        self.custom_voice_id_entry = ttk.Entry(left_frame, textvariable=self.custom_voice_id_var, width=30)
-        self.custom_voice_id_entry.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
-        row += 1
-        
-        ttk.Label(left_frame, text="Voice Name:").grid(row=row, column=0, sticky="e")
-        self.custom_voice_name_var = tk.StringVar()
-        self.custom_voice_name_entry = ttk.Entry(left_frame, textvariable=self.custom_voice_name_var, width=30)
-        self.custom_voice_name_entry.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
-        row += 1
-        
-        _lbl_voice_lang = ttk.Label(left_frame, text="Language Category:")
-        _lbl_voice_lang.grid(row=row, column=0, sticky="e")
-        self.custom_voice_lang_var = tk.StringVar(value="en")
-        lang_options = ["en", "es", "fr", "de", "it", "pt", "ro", "ru", "zh", "ja", "ko", "ar"]
-        self.custom_voice_lang_combo = ttk.Combobox(left_frame, textvariable=self.custom_voice_lang_var, values=lang_options, state="readonly", width=10)
-        self.custom_voice_lang_combo.grid(row=row, column=1, sticky="w", padx=(6,0))
-        self._register_lockable("custom_voice_lang", _lbl_voice_lang, self.custom_voice_lang_combo, is_combo_readonly=True)
-        row += 1
-        
-        ttk.Button(left_frame, text="Save Custom Voice", style='Accent.TButton', command=self.on_save_custom_voice).grid(row=row, column=1, sticky="w", padx=(6,0))
-        row += 1
-        
         # Silence Removal Threshold Section
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
         row += 1

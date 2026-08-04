@@ -333,6 +333,7 @@ def generate_xtts_ro(
     output_path: str = None,
     log=None,
     config: dict = None,
+    speed: float = None,
 ) -> str:
     """
     Generate Romanian XTTS voice for *text*.
@@ -347,6 +348,9 @@ def generate_xtts_ro(
         Logging callback ``log(message: str)``.
     config : dict, optional
         Override config values (merged on top of xtts_ro_config.json).
+    speed : float, optional
+        Playback speed multiplier (0.5 = slower, 1.0 = normal, 2.0 = faster).
+        Applied via resampling after synthesis.
 
     Returns
     -------
@@ -463,6 +467,28 @@ def generate_xtts_ro(
                     log(f"[XTTS RO] Resampled {sample_rate} Hz → {out_sr} Hz")
             except Exception:
                 pass  # keep original sample rate
+
+        # Apply speed adjustment via resampling (speed > 1 = faster, < 1 = slower)
+        effective_speed = float(speed) if speed is not None else 1.0
+        effective_speed = max(0.25, min(4.0, effective_speed))
+        if abs(effective_speed - 1.0) > 0.01 and len(final_wav) > 0:
+            try:
+                from scipy.signal import resample_poly
+                from math import gcd
+                # To speed up, resample to a lower virtual sample rate then play at out_sr
+                # Equivalent: stretch array length by 1/speed
+                orig_len = len(final_wav)
+                new_len = max(1, int(round(orig_len / effective_speed)))
+                # Use resample_poly for quality resampling
+                speed_num = int(round(effective_speed * 1000))
+                speed_den = 1000
+                g = gcd(speed_num, speed_den)
+                final_wav = resample_poly(final_wav, speed_den // g, speed_num // g).astype(np.float32)
+                if log:
+                    log(f"[XTTS RO] Speed {effective_speed:.2f}x applied ({orig_len} → {len(final_wav)} samples)")
+            except Exception as speed_exc:
+                if log:
+                    log(f"[XTTS RO] ⚠ Speed adjustment failed: {speed_exc}")
 
         # Clip to [-1, 1] to prevent clipping artifacts
         final_wav = np.clip(final_wav, -1.0, 1.0)
