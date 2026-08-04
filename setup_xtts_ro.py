@@ -58,8 +58,15 @@ if use_cpu:
     run([venv_pip, "install", "torch", "torchvision", "torchaudio",
          "--index-url", "https://download.pytorch.org/whl/cpu", "--quiet"])
 else:
+    # Try CUDA 12.8 first (RTX 5000 series - sm_120 / Blackwell architecture)
+    print("Trying PyTorch with CUDA 12.8 (RTX 5000 series support)...")
     ret = run([venv_pip, "install", "torch", "torchvision", "torchaudio",
-               "--index-url", "https://download.pytorch.org/whl/cu121", "--quiet"], check=False)
+               "--index-url", "https://download.pytorch.org/whl/cu128", "--quiet"], check=False)
+    if ret != 0:
+        # Fall back to CUDA 12.1
+        print("CUDA 12.8 not available — trying CUDA 12.1...")
+        ret = run([venv_pip, "install", "torch", "torchvision", "torchaudio",
+                   "--index-url", "https://download.pytorch.org/whl/cu121", "--quiet"], check=False)
     if ret != 0:
         print("CUDA build failed — falling back to CPU-only PyTorch.")
         run([venv_pip, "install", "torch", "torchvision", "torchaudio",
@@ -67,9 +74,20 @@ else:
 print("PyTorch installed.")
 print()
 
-# --- 5. Install Coqui TTS ---
+# --- 5. Install compatible transformers (Coqui TTS requires BeamSearchScorer) ---
+print("Installing compatible transformers version...")
+run([venv_pip, "install", "transformers==4.33.3", "--quiet"])
+print("transformers installed.")
+print()
+
+# --- 6. Install Coqui TTS (without overriding transformers) ---
 print("Installing Coqui TTS (this may take a few minutes)...")
-run([venv_pip, "install", "TTS", "--quiet"])
+run([venv_pip, "install", "TTS", "--no-deps", "--quiet"])
+# Install TTS dependencies except transformers
+run([venv_pip, "install", "trainer", "coqpit", "inflect", "anyascii",
+     "bangla", "bnnumerizer", "bnunicodenormalizer", "gruut", "jamo",
+     "jieba", "pypinyin", "tqdm", "librosa", "unidecode", "pysbd",
+     "encodec", "--quiet"], check=False)
 print("Coqui TTS installed.")
 print()
 
