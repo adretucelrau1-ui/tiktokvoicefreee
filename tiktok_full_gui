@@ -2035,20 +2035,51 @@ def _get_genaipro_api_key():
 
 def generate_tts_audio(text, language='en', output_path=None, log=None):
     """
-    Generate Text-to-Speech audio using GenAI Pro exclusively.
-    
+    Generate Text-to-Speech audio.
+
+    When USE_XTTS_RO is True (or language == 'ro' and XTTS RO is available),
+    the local Romanian XTTS pipeline is used.  Otherwise, GenAI Pro is used.
+
     Args:
         text: Text to convert to speech
         language: Language code for TTS
         output_path: Path to save audio file (temp file if None)
         log: Optional logging function
-    
+
     Returns:
         Path to generated audio file or None if failed
     """
     if not text or not text.strip():
         return None
-    
+
+    # --- XTTS RO path ---
+    use_xtts_ro = globals().get('USE_XTTS_RO', False)
+    if use_xtts_ro:
+        if log:
+            log("=" * 60)
+            log("[TTS] 🎙️  STARTING XTTS RO VOICE GENERATION")
+            log(f"[TTS] Text length: {len(text)} characters")
+            log(f"[TTS] Language: {language}")
+            log("=" * 60)
+        try:
+            from xtts_ro import generate_xtts_ro
+            result = generate_xtts_ro(text, output_path=output_path, log=log)
+        except Exception as xtts_exc:
+            if log:
+                log(f"[TTS] ❌ XTTS RO failed: {xtts_exc}")
+            result = None
+        if result:
+            if log:
+                log("=" * 60)
+                log("[TTS] ✅ XTTS RO GENERATION COMPLETE!")
+                log(f"[TTS] Audio file ready: {result}")
+                log("=" * 60)
+            return result
+        if log:
+            log("[TTS] ❌ XTTS RO generation failed.")
+        return None
+
+    # --- GenAI Pro path (default) ---
     api_key = _get_genaipro_api_key()
     if not api_key:
         if log:
@@ -2116,8 +2147,9 @@ def replace_voice_with_tts(caption_segments, language='en', log=None):
     Returns:
         Path to generated audio file or None if failed
     """
-    # Check if GenAI Pro TTS is available
-    if not _get_genaipro_api_key():
+    # Allow XTTS RO to bypass GenAI Pro API key requirement
+    use_xtts_ro = globals().get('USE_XTTS_RO', False)
+    if not use_xtts_ro and not _get_genaipro_api_key():
         if log:
             log("[TTS] ⚠️  No GenAI Pro API key found in tts_config.json")
         return None
@@ -2296,6 +2328,7 @@ VIDEO_ZOOM_SCALE = 1.0  # 1.0 = auto-fit, <1.0 = zoom out, >1.0 = zoom in
 TRANSLATION_ENABLED = False
 TARGET_LANGUAGE = 'none'  # 'none', 'en', 'es', 'fr', 'ro', etc.
 USE_AI_VOICE_REPLACEMENT = False
+USE_XTTS_RO = False  # When True, use local Romanian XTTS instead of GenAI Pro
 TTS_LANGUAGE = 'en'
 TTS_VOICE_ID = 'auto'  # 'auto' or specific voice ID
 TTS_FALLBACK_VOICE_ID = 'auto'  # Backup voice ID used when primary voice fails (policy violation, crash, etc.)
@@ -7329,6 +7362,12 @@ class App:
                        command=self.on_ai_voice_toggle).grid(row=row, column=0, columnspan=3, sticky="w")
         row += 1
 
+        # XTTS RO mode checkbox — replaces GenAI Pro with local Romanian XTTS
+        self.use_xtts_ro_var = tk.BooleanVar(value=USE_XTTS_RO)
+        ttk.Checkbutton(left_frame, text="xtts ro voice", variable=self.use_xtts_ro_var,
+                       command=self.on_xtts_ro_toggle).grid(row=row, column=0, columnspan=3, sticky="w")
+        row += 1
+
         _lbl_tts_lang = ttk.Label(left_frame, text="TTS language:")
         _lbl_tts_lang.grid(row=row, column=0, sticky="e")
         self.tts_language_var = tk.StringVar(value=TTS_LANGUAGE)
@@ -8953,16 +8992,38 @@ class App:
             enabled = self.use_ai_voice_var.get()
             globals()['USE_AI_VOICE_REPLACEMENT'] = enabled
             if enabled:
-                if not _get_genaipro_api_key():
+                use_xtts_ro = globals().get('USE_XTTS_RO', False)
+                if not use_xtts_ro and not _get_genaipro_api_key():
                     messagebox.showwarning(
                         "No TTS Engine Available",
                         "GenAI Pro API key not found.\n"
-                        "Please configure tts_config.json with a valid API key."
+                        "Please configure tts_config.json with a valid API key,\n"
+                        "or enable 'xtts ro voice' to use the local XTTS engine."
                     )
                     self.use_ai_voice_var.set(False)
                     globals()['USE_AI_VOICE_REPLACEMENT'] = False
         except Exception as e:
             print(f"AI voice toggle error: {e}")
+
+    def on_xtts_ro_toggle(self):
+        """Callback when 'xtts ro voice' checkbox is toggled."""
+        try:
+            enabled = self.use_xtts_ro_var.get()
+            globals()['USE_XTTS_RO'] = enabled
+            if enabled:
+                # Auto-enable AI voice replacement so the pipeline runs
+                if hasattr(self, 'use_ai_voice_var') and not self.use_ai_voice_var.get():
+                    self.use_ai_voice_var.set(True)
+                    globals()['USE_AI_VOICE_REPLACEMENT'] = True
+                if hasattr(self, 'log_to_console'):
+                    self.log_to_console(
+                        "[XTTS RO] Local Romanian XTTS engine enabled. "
+                        "Configure model/speaker paths in xtts_ro_config.json."
+                    )
+            else:
+                globals()['USE_XTTS_RO'] = False
+        except Exception as e:
+            print(f"XTTS RO toggle error: {e}")
     
     def on_tts_language_selected(self, event=None):
         """Callback when TTS language is selected"""
@@ -10148,6 +10209,7 @@ class App:
                 "dim_factor": globals().get('DIM_FACTOR', 1.0),
                 # AI and caption settings
                 "use_ai_voice": self.use_ai_voice_var.get(),
+                "use_xtts_ro": self.use_xtts_ro_var.get() if hasattr(self, "use_xtts_ro_var") else USE_XTTS_RO,
                 "translation_enabled": self.translation_enabled_var.get(),
                 "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
                 "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
@@ -10226,6 +10288,7 @@ class App:
                 "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
                 "dim_factor": globals().get('DIM_FACTOR', 1.0),
                 "use_ai_voice": self.use_ai_voice_var.get(),
+                "use_xtts_ro": self.use_xtts_ro_var.get() if hasattr(self, "use_xtts_ro_var") else USE_XTTS_RO,
                 "translation_enabled": self.translation_enabled_var.get(),
                 "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
                 "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
@@ -10339,6 +10402,9 @@ class App:
             
             # Load AI and translation settings
             self.use_ai_voice_var.set(job.get("use_ai_voice", False))
+            if hasattr(self, 'use_xtts_ro_var'):
+                self.use_xtts_ro_var.set(job.get("use_xtts_ro", False))
+                globals()['USE_XTTS_RO'] = job.get("use_xtts_ro", False)
             self.translation_enabled_var.set(job.get("translation_enabled", False))
             if hasattr(self, 'target_language_var'):
                 self.target_language_var.set(job.get("target_language", "none"))
@@ -10528,6 +10594,7 @@ class App:
                 "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
                 "dim_factor": globals().get('DIM_FACTOR', 1.0),
                 "use_ai_voice": self.use_ai_voice_var.get(),
+                "use_xtts_ro": self.use_xtts_ro_var.get() if hasattr(self, "use_xtts_ro_var") else USE_XTTS_RO,
                 "translation_enabled": self.translation_enabled_var.get(),
                 "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
                 "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
@@ -10855,6 +10922,7 @@ class App:
                    "dim_factor": globals().get('DIM_FACTOR', 1.0),
                    # AI and caption settings
                    "use_ai_voice": self.use_ai_voice_var.get(),
+                "use_xtts_ro": self.use_xtts_ro_var.get() if hasattr(self, "use_xtts_ro_var") else USE_XTTS_RO,
                    "translation_enabled": self.translation_enabled_var.get(),
                    "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
                    "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
@@ -11766,6 +11834,7 @@ class App:
                 "translation_custom_prompt": self.translation_prompt_var.get() if hasattr(self, 'translation_prompt_var') else "",
                 "openai_api_key": self.openai_key_var.get().strip() if hasattr(self, 'openai_key_var') else "",
                 "use_ai_voice": self.use_ai_voice_var.get(),
+                "use_xtts_ro": self.use_xtts_ro_var.get() if hasattr(self, "use_xtts_ro_var") else USE_XTTS_RO,
                 "tts_language": self.tts_language_var.get(),
                 "tts_voice": self.tts_voice_var.get(),
                 "tts_fallback_voice": self.tts_fallback_voice_var.get() if hasattr(self, 'tts_fallback_voice_var') else "Auto (Default)",
@@ -11881,6 +11950,9 @@ class App:
                     self.openai_key_var.set(saved_key)
                     globals()['OPENAI_API_KEY'] = saved_key
             self.use_ai_voice_var.set(preset_data.get("use_ai_voice", USE_AI_VOICE_REPLACEMENT))
+            if hasattr(self, 'use_xtts_ro_var'):
+                self.use_xtts_ro_var.set(preset_data.get("use_xtts_ro", USE_XTTS_RO))
+                globals()['USE_XTTS_RO'] = preset_data.get("use_xtts_ro", USE_XTTS_RO)
             self.tts_language_var.set(preset_data.get("tts_language", TTS_LANGUAGE))
             # Rebuild dropdown for language first, then restore selected voice + sync global
             self.update_voice_dropdown(preset_data.get("tts_language", TTS_LANGUAGE))
@@ -12019,6 +12091,9 @@ class App:
                     self.openai_key_var.set(saved_key)
                     globals()['OPENAI_API_KEY'] = saved_key
             self.use_ai_voice_var.set(preset_data.get("use_ai_voice", USE_AI_VOICE_REPLACEMENT))
+            if hasattr(self, 'use_xtts_ro_var'):
+                self.use_xtts_ro_var.set(preset_data.get("use_xtts_ro", USE_XTTS_RO))
+                globals()['USE_XTTS_RO'] = preset_data.get("use_xtts_ro", USE_XTTS_RO)
             self.tts_language_var.set(preset_data.get("tts_language", TTS_LANGUAGE))
             # Rebuild dropdown for language first, then restore selected voice + sync global
             self.update_voice_dropdown(preset_data.get("tts_language", TTS_LANGUAGE))
@@ -12136,6 +12211,9 @@ class App:
             self.translation_enabled_var.set(TRANSLATION_ENABLED)
             self.target_language_var.set(TARGET_LANGUAGE)
             self.use_ai_voice_var.set(USE_AI_VOICE_REPLACEMENT)
+            if hasattr(self, 'use_xtts_ro_var'):
+                self.use_xtts_ro_var.set(USE_XTTS_RO)
+                globals()['USE_XTTS_RO'] = USE_XTTS_RO
             self.tts_language_var.set(TTS_LANGUAGE)
             self.tts_voice_var.set('Auto (Default)')
             self.silence_threshold_var.set(300)
