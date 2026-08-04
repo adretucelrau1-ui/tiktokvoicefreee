@@ -56,17 +56,15 @@ echo.
 
 :: --- 4. Install PyTorch (with CUDA if available, else CPU) -------------------
 echo Installing PyTorch...
-if defined USE_CPU (
-    echo USE_CPU=1 set — installing CPU-only PyTorch.
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu --quiet
-) else (
-    :: Try CUDA 12.1 build first; fall back to CPU if it fails
-    pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 --quiet
-    if errorlevel 1 (
-        echo CUDA build failed — falling back to CPU-only PyTorch.
-        pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu --quiet
-    )
-)
+if defined USE_CPU goto install_cpu_torch
+:: Try CUDA 12.1 build first; fall back to CPU if it fails
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121 --quiet
+if errorlevel 1 goto install_cpu_torch
+goto torch_done
+:install_cpu_torch
+echo Installing CPU-only PyTorch...
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cpu --quiet
+:torch_done
 echo PyTorch installed.
 echo.
 
