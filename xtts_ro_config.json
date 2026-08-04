@@ -1,7 +1,8 @@
 {
     "_comment": "Romanian XTTS configuration — edit paths and tuning params here.",
     "model_path": "",
-    "speaker_ref_path": "xtts_speaker_ref.wav",
+    "active_voice": "",
+    "speaker_ref_path": "",
     "language": "ro",
     "max_chars_per_chunk": 220,
     "crossfade_ms": 80,

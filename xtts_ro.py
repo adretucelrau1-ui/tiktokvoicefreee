@@ -33,6 +33,7 @@ _CONFIG_PATH = _THIS_DIR / "xtts_ro_config.json"
 
 _DEFAULT_CONFIG = {
     "model_path": "",           # Path to XTTS v2 model dir (or leave empty to auto-download)
+    "active_voice": "",         # Name of active voice profile from voices/ folder
     "speaker_ref_path": "",     # Path to reference WAV file for voice cloning
     "language": "ro",
     "max_chars_per_chunk": 220, # Maximum characters per synthesis chunk
@@ -238,11 +239,24 @@ def _load_xtts_model(model_path: str, device: str, log=None):
 # Speaker conditioning
 # ---------------------------------------------------------------------------
 
-def _get_speaker_ref(speaker_ref_path: str, log=None):
+def _get_speaker_ref(speaker_ref_path: str, log=None, active_voice: str = ""):
     """
     Resolve and validate the speaker reference audio path.
+    If active_voice is set, looks in the voices/ folder first.
     Returns the path string if valid, else None.
     """
+    # Try active_voice from voices/ folder first
+    if active_voice:
+        voices_dir = _THIS_DIR / "voices"
+        voice_file = voices_dir / f"{active_voice}.wav"
+        if voice_file.exists():
+            if log:
+                log(f"[XTTS RO] Using voice profile: {active_voice} ({voice_file})")
+            return str(voice_file)
+        else:
+            if log:
+                log(f"[XTTS RO] ⚠ Voice profile '{active_voice}' not found in voices/ — falling back to speaker_ref_path")
+
     if not speaker_ref_path:
         if log:
             log("[XTTS RO] No speaker_ref_path configured — using XTTS default voice")
@@ -353,7 +367,8 @@ def generate_xtts_ro(
 
     # Resolve paths
     model_path = cfg.get("model_path", "")
-    speaker_ref = _get_speaker_ref(cfg.get("speaker_ref_path", ""), log=log)
+    active_voice = cfg.get("active_voice", "")
+    speaker_ref = _get_speaker_ref(cfg.get("speaker_ref_path", ""), log=log, active_voice=active_voice)
     language = cfg.get("language", "ro")
     max_chars = int(cfg.get("max_chars_per_chunk", 220))
     crossfade_ms = int(cfg.get("crossfade_ms", 80))
