@@ -7,7 +7,7 @@ TikTok-style video generator with GUI, translation, captions, and AI voice-over.
 ## Quick Start
 
 ```
-python tiktok_full_gui
+python cliptic
 ```
 
 ---
@@ -42,13 +42,13 @@ To force CPU, run `set USE_CPU=1` before executing the script.
 | *(model dir)* | XTTS v2 checkpoint (`model.pth`, `config.json`, `vocab.json`) |
 
 **Where to place files:**
-- Put `xtts_speaker_ref.wav` in the same folder as `tiktok_full_gui`.
+- Put `xtts_speaker_ref.wav` in the same folder as `cliptic`.
 - Set `"model_path"` in `xtts_ro_config.json` to your model directory.
   Leave it empty (`""`) to auto-download the model on first run (~1.8 GB).
 
 ### Using XTTS RO in the GUI
 
-1. Launch the GUI: `.venv\Scripts\python tiktok_full_gui`
+1. Launch the GUI: `.venv\Scripts\python cliptic`
 2. In the **Translation & AI Voice** section:
    - Check **"xtts ro voice"** — enables local Romanian XTTS synthesis.
    - Check **"Replace voice with AI (TTS)"** (auto-enabled when you tick XTTS RO).

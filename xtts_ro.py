@@ -12,7 +12,7 @@ Features:
 Usage (standalone):
     python xtts_ro.py "Acesta este un test." --out test_out.wav
 
-Usage (from tiktok_full_gui):
+Usage (from cliptic):
     from xtts_ro import generate_xtts_ro
     path = generate_xtts_ro(text, output_path=output_path, log=log)
 """

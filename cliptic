@@ -6867,7 +6867,7 @@ class App:
 
     def __init__(self, root):
         self.root = root
-        root.title("TikTok Auto Studio")
+        root.title("Cliptic")
         # --- Lock system for scroll protection ---
         self._lock_vars = {}           # {lock_key: BooleanVar}
         self._lock_labels = {}         # {lock_key: label widget}

@@ -1,5 +1,5 @@
 @echo off
-:: setup_xtts_ro.bat — Auto-setup for Romanian XTTS voice pipeline
+:: setup_xtts_ro.bat - Auto-setup for Romanian XTTS voice pipeline
 :: Run this script once from the project root to install all requirements.
 ::
 :: GPU (CUDA) vs CPU:
@@ -14,7 +14,7 @@
 setlocal enabledelayedexpansion
 
 echo ============================================================
-echo  XTTS RO — Auto-setup for Romanian XTTS voice pipeline
+echo  XTTS RO - Auto-setup for Romanian XTTS voice pipeline
 echo ============================================================
 echo.
 
@@ -121,13 +121,13 @@ echo      Leave "model_path" empty to auto-download the model on
 echo      first run (requires internet, ~1.8 GB).
 echo.
 echo   2. Place a Romanian speaker reference WAV file next to
-echo      tiktok_full_gui (e.g. xtts_speaker_ref.wav) and set
+echo      cliptic (e.g. xtts_speaker_ref.wav) and set
 echo      "speaker_ref_path" in xtts_ro_config.json.
 echo      The reference audio should be 6-30 seconds of clean,
 echo      noise-free Romanian speech.
 echo.
 echo   3. Run the GUI:
-echo        .venv\Scripts\python tiktok_full_gui
+echo        .venv\Scripts\python cliptic
 echo.
 echo   4. In the GUI:
 echo        a) Check "xtts ro voice" to enable local XTTS RO synthesis.
