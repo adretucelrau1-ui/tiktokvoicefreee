@@ -3026,9 +3026,40 @@ def _find_and_remove_corrupted_whisper_models(model_name, log=None):
                         if log: log(f"[whisper-cleanup] failed to remove {full}: {e}")
     return removed
 
+def _ensure_whisper_deps(log=None):
+    """Import 'torch' and 'whisper', auto-installing them via pip if missing.
+
+    This mirrors the app's self-healing approach for other recoverable Whisper
+    errors (corrupted downloads, CUDA mismatches): instead of just telling the
+    user to run 'pip install openai-whisper torch' and aborting the job, try
+    doing it automatically first, then retry the import.
+    """
+    try:
+        import torch
+        import whisper
+        return whisper, torch
+    except (ModuleNotFoundError, ImportError) as e_import:
+        if log:
+            log(f"[whisper] Modulul necesar lipsește ({e_import}). "
+                f"Se încearcă instalarea automată (pip install openai-whisper torch)...")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "openai-whisper", "torch"])
+        except Exception as e_install:
+            if log: log(f"[whisper] Instalarea automată a eșuat: {e_install}")
+            raise e_import
+        import importlib
+        importlib.invalidate_caches()
+        try:
+            import torch
+            import whisper
+        except (ModuleNotFoundError, ImportError) as e_retry:
+            if log: log(f"[whisper] Modulul tot lipsește după instalarea automată: {e_retry}")
+            raise e_import
+        if log: log("[whisper] Instalare automată reușită ('openai-whisper' și 'torch').")
+        return whisper, torch
+
 def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
-    import torch    # lazy import — heavy module, only loaded when transcription is needed
-    import whisper  # lazy import — heavy module, only loaded when transcription is needed
+    whisper, torch = _ensure_whisper_deps(log=log)  # lazy import — heavy modules, only loaded when transcription is needed
     last_exc = None
     
     # Detect GPU availability for Whisper with improved detection
