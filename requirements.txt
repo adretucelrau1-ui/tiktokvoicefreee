@@ -5,3 +5,4 @@ torchvision
 torchaudio
 soundfile
 scipy
+openai-whisper
