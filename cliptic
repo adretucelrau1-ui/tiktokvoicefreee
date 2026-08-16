@@ -111,7 +111,7 @@ import gc
 
 import tkinter as tk
 import tkinter.font as tkfont
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 from tkinter.scrolledtext import ScrolledText
 from pathlib import Path
 
@@ -6999,6 +6999,15 @@ class App:
             style.configure('TLabelframe.Label', background=self.BG_DARK, foreground=self.ACCENT_BLUE,
                           font=('Segoe UI', 10, 'bold'))
 
+            # --- TNotebook: dark tabs for the left panel (Video / Voice Cloning) ---
+            style.configure('TNotebook', background=self.BG_DARK, borderwidth=0)
+            style.configure('TNotebook.Tab', background=self.BG_ELEVATED, foreground=self.TEXT_SECONDARY,
+                          padding=(12, 6), font=('Segoe UI', 9, 'bold'), borderwidth=1)
+            style.map('TNotebook.Tab',
+                      background=[('selected', self.BG_SECONDARY), ('active', self.HOVER_BG)],
+                      foreground=[('selected', self.TEXT_PRIMARY)],
+                      bordercolor=[('selected', self.ACCENT_BLUE)])
+
             # --- Accent button styles (with border) ---
             style.configure('Accent.TButton', background=self.ACCENT_BLUE, foreground='#ffffff',
                           borderwidth=1, bordercolor='#4090e0', relief='solid',
@@ -7163,11 +7172,31 @@ class App:
             left_container.config(bg=self.BG_DARK)
         except Exception:
             pass
-        
+
+        # Left side is split into two tabs: the main video-generation controls
+        # and a separate "Voice Cloning" tab where custom voices for XTTS can
+        # be cloned/managed independently of running a video job.
+        left_notebook = ttk.Notebook(left_container)
+        left_notebook.pack(fill="both", expand=True)
+
+        tab_video = ttk.Frame(left_notebook)
+        try:
+            tab_video.config(style='TFrame')
+        except Exception:
+            pass
+        left_notebook.add(tab_video, text="🎬 Generare Video")
+
+        tab_voice_clone = ttk.Frame(left_notebook)
+        try:
+            tab_voice_clone.config(style='TFrame')
+        except Exception:
+            pass
+        left_notebook.add(tab_voice_clone, text="🎙️ Clonare Voci")
+
         # Create Canvas and Scrollbar for scrollable left panel
-        left_canvas = tk.Canvas(left_container, bg=self.BG_DARK, highlightthickness=0)
+        left_canvas = tk.Canvas(tab_video, bg=self.BG_DARK, highlightthickness=0)
         self._left_canvas = left_canvas
-        left_scrollbar = ttk.Scrollbar(left_container, orient="vertical", command=left_canvas.yview)
+        left_scrollbar = ttk.Scrollbar(tab_video, orient="vertical", command=left_canvas.yview)
         
         # Create the actual frame that will contain all controls
         left_frame = ttk.Frame(left_canvas, padding=10)
@@ -7210,6 +7239,9 @@ class App:
         
         left_canvas.bind('<Enter>', bind_mousewheel)
         left_canvas.bind('<Leave>', unbind_mousewheel)
+
+        # Build the "Clonare Voci" tab content (independent voice-cloning UI)
+        self._build_voice_clone_tab(tab_voice_clone)
         
         pw.add(left_container, weight=1)
 
