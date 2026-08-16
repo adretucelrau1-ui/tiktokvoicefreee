@@ -91,19 +91,19 @@ run([venv_pip, "install", "trainer", "coqpit", "inflect", "anyascii",
 print("Coqui TTS installed.")
 print()
 
-# --- 6. Install soundfile ---
+# --- 7. Install soundfile ---
 print("Installing soundfile...")
 run([venv_pip, "install", "soundfile", "--quiet"])
 print("soundfile installed.")
 print()
 
-# --- 7. Install scipy ---
+# --- 8. Install scipy ---
 print("Installing scipy...")
 run([venv_pip, "install", "scipy", "--quiet"])
 print("scipy installed.")
 print()
 
-# --- 8. Install from requirements.txt if present ---
+# --- 9. Install from requirements.txt if present ---
 req_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), "requirements.txt")
 if os.path.exists(req_file):
     print("Installing from requirements.txt...")
@@ -111,14 +111,14 @@ if os.path.exists(req_file):
     print("Done.")
     print()
 
-# --- 9. Verify ---
+# --- 10. Verify ---
 print("Verifying installation...")
 run([venv_python, "-c", "import torch; print('  torch:', torch.__version__, '| CUDA:', torch.cuda.is_available())"])
 run([venv_python, "-c", "from TTS.api import TTS; print('  TTS: OK')"])
 run([venv_python, "-c", "import soundfile; print('  soundfile: OK')"])
 print()
 
-# --- 10. Next steps ---
+# --- 11. Next steps ---
 print("=" * 60)
 print(" Setup complete!")
 print("=" * 60)

@@ -225,8 +225,9 @@ def _load_xtts_model(model_path: str, device: str, log=None):
         import torch
         model.to(device)
     else:
-        # Auto-download the official XTTS v2 model via the TTS API
-        use_gpu = device == "cuda"
+        # Auto-download the official XTTS v2 model via the TTS API.
+        # NOTE: TTS.api.TTS's `gpu=` constructor kwarg is deprecated in favor of
+        # explicitly moving the model with `.to(device)`, which is what we do here.
         model = CoquiTTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
 
     if log:
