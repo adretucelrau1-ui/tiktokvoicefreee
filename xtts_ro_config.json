@@ -1,8 +1,10 @@
 {
     "_comment": "Romanian XTTS configuration — edit paths and tuning params here.",
     "model_path": "",
+    "voice_mode": "builtin",
     "active_voice": "",
     "speaker_ref_path": "",
+    "builtin_speaker": "Claribel Dervla",
     "language": "ro",
     "max_chars_per_chunk": 220,
     "crossfade_ms": 80,

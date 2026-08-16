@@ -31,10 +31,38 @@ from pathlib import Path
 _THIS_DIR = Path(__file__).resolve().parent
 _CONFIG_PATH = _THIS_DIR / "xtts_ro_config.json"
 
+# Built-in XTTS v2 "studio" speakers bundled with the public checkpoint's
+# speakers_xtts.pth.  These are ready-made voices that can be used without
+# cloning anything — handy when the user doesn't want to use a custom
+# cloned voice.  Kept as a static list so the UI can populate a speaker
+# picker instantly, without having to load the (large) model first.  The
+# authoritative list is always re-read from the loaded model when possible
+# (see list_builtin_speakers()).
+BUILTIN_SPEAKERS = [
+    "Claribel Dervla", "Daisy Studious", "Gracie Wise", "Tammie Ema",
+    "Alison Dietlinde", "Ana Florence", "Annmarie Nele", "Asya Anara",
+    "Brenda Stern", "Gitta Nikolina", "Henriette Usha", "Sofia Hellen",
+    "Tammy Grit", "Tanja Adelina", "Vjollca Johnnie", "Andrew Chipper",
+    "Badr Odhiambo", "Dionisio Schuyler", "Royston Min", "Viktor Eka",
+    "Abrahan Mack", "Adde Michal", "Baldur Sanjin", "Craig Gutsy",
+    "Damien Black", "Gilberto Mathias", "Ilkin Urbano", "Kazuhiko Atallah",
+    "Ludvig Milivoj", "Suad Qasim", "Torcull Diarmuid", "Viktor Menelaos",
+    "Zacharie Aimilios", "Nova Hogarth", "Maja Ruoho", "Uta Obando",
+    "Lidiya Szekeres", "Chandra MacFarland", "Szofi Granger",
+    "Camilla Holmström", "Lilya Stainthorpe", "Zofija Kendrick",
+    "Narelle Moon", "Barbora MacLean", "Alexandra Hisakawa", "Alma María",
+    "Rosemary Okafor", "Ige Behringer", "Filip Traverse", "Damjan Chapman",
+    "Wulf Carlevaro", "Aaron Dreschner", "Kumar Dahl", "Eugenio Mataracı",
+    "Ferran Simen", "Xavier Hayasaka", "Luis Moray", "Marcos Rudaski",
+]
+DEFAULT_BUILTIN_SPEAKER = "Claribel Dervla"
+
 _DEFAULT_CONFIG = {
     "model_path": "",           # Path to XTTS v2 model dir (or leave empty to auto-download)
+    "voice_mode": "custom",     # "custom" = use active_voice/speaker_ref_path, "builtin" = use builtin_speaker
     "active_voice": "",         # Name of active voice profile from voices/ folder
     "speaker_ref_path": "",     # Path to reference WAV file for voice cloning
+    "builtin_speaker": DEFAULT_BUILTIN_SPEAKER,  # Built-in XTTS studio speaker name (used when voice_mode == "builtin" or no custom voice is set)
     "language": "ro",
     "max_chars_per_chunk": 220, # Maximum characters per synthesis chunk
     "crossfade_ms": 80,         # Crossfade duration between chunks (milliseconds)
@@ -293,6 +321,43 @@ def _load_speaker_ref_as_numpy(speaker_ref_path: str):
 
 
 # ---------------------------------------------------------------------------
+# Voice listing helpers (used by cliptic's UI and manage_voices.py)
+# ---------------------------------------------------------------------------
+
+def list_custom_voices():
+    """Return the sorted list of cloned voice names available in voices/."""
+    voices_dir = _THIS_DIR / "voices"
+    if not voices_dir.exists():
+        return []
+    return sorted(p.stem for p in voices_dir.iterdir() if p.suffix.lower() == ".wav")
+
+
+def list_builtin_speakers(model=None):
+    """
+    Return the list of built-in XTTS v2 studio speaker names.
+
+    If *model* (an already-loaded XTTS model instance) is provided and
+    exposes a speaker manager, the authoritative list is read from it.
+    Otherwise the static BUILTIN_SPEAKERS fallback is returned, which lets
+    callers (e.g. a GUI dropdown) list the built-in voices without paying
+    the cost of loading the model first.
+    """
+    if model is not None:
+        try:
+            names = list(model.speaker_manager.speakers.keys())
+            if names:
+                return sorted(names)
+        except Exception:
+            pass
+    return list(BUILTIN_SPEAKERS)
+
+
+def list_available_voices():
+    """Return {'custom': [...], 'builtin': [...]} voice names."""
+    return {"custom": list_custom_voices(), "builtin": list_builtin_speakers()}
+
+
+# ---------------------------------------------------------------------------
 # Audio concatenation with crossfade
 # ---------------------------------------------------------------------------
 
@@ -373,7 +438,23 @@ def generate_xtts_ro(
     # Resolve paths
     model_path = cfg.get("model_path", "")
     active_voice = cfg.get("active_voice", "")
-    speaker_ref = _get_speaker_ref(cfg.get("speaker_ref_path", ""), log=log, active_voice=active_voice)
+    voice_mode = cfg.get("voice_mode", "custom")
+
+    speaker_ref = None
+    if voice_mode != "builtin":
+        speaker_ref = _get_speaker_ref(cfg.get("speaker_ref_path", ""), log=log, active_voice=active_voice)
+
+    # XTTS v2 is a multi-speaker model: calling it without EITHER a speaker
+    # reference (voice cloning) OR a named built-in speaker raises an error
+    # inside model.tts()/model.inference().  To make sure a voice is always
+    # produced (and never silently falls back to the original video audio),
+    # resolve a built-in studio speaker whenever no custom voice is active.
+    builtin_speaker_name = None
+    if not speaker_ref:
+        builtin_speaker_name = cfg.get("builtin_speaker") or DEFAULT_BUILTIN_SPEAKER
+        if log:
+            log(f"[XTTS RO] No custom voice selected — using built-in speaker: {builtin_speaker_name}")
+
     language = cfg.get("language", "ro")
     max_chars = int(cfg.get("max_chars_per_chunk", 220))
     crossfade_ms = int(cfg.get("crossfade_ms", 80))
@@ -395,7 +476,7 @@ def generate_xtts_ro(
 
         model = _load_xtts_model(model_path, device, log=log)
 
-        # Build conditioning latents from speaker ref
+        # Build conditioning latents from speaker ref (custom cloned voice)
         if speaker_ref:
             if log:
                 log("[XTTS RO] Extracting speaker conditioning latents…")
@@ -403,9 +484,28 @@ def generate_xtts_ro(
                 audio_path=[speaker_ref]
             )
         else:
-            # Use a built-in sample speaker if no ref provided
+            # Voice cloning conditioning is only used for custom voices.  For
+            # built-in speakers we rely on the model's own speaker bank via
+            # model.tts(..., speaker=builtin_speaker_name) below.
             gpt_cond_latent = None
             speaker_embedding = None
+
+            # Validate that the requested built-in speaker actually exists in
+            # THIS checkpoint's speaker bank (names can differ across model
+            # versions).  If not, fall back to one that does, instead of
+            # letting every chunk raise and silently producing no audio.
+            try:
+                available_builtin = list(getattr(model.speaker_manager, "speakers", {}).keys())
+            except Exception:
+                available_builtin = []
+            if available_builtin and builtin_speaker_name not in available_builtin:
+                fallback_speaker = sorted(available_builtin)[0]
+                if log:
+                    log(f"[XTTS RO] ⚠ Built-in speaker '{builtin_speaker_name}' not found in this checkpoint — using '{fallback_speaker}'")
+                builtin_speaker_name = fallback_speaker
+            elif not available_builtin:
+                if log:
+                    log("[XTTS RO] ⚠ Model has no built-in speaker bank — synthesis may fail without a custom voice")
 
         # Split text into chunks
         chunks = _split_into_chunks(text, max_chars)
@@ -435,8 +535,13 @@ def generate_xtts_ro(
                         wav = wav.cpu().numpy()
                     wav = np.array(wav, dtype=np.float32).squeeze()
                 else:
-                    # No speaker ref — use high-level TTS.tts() which picks defaults
-                    wav = model.tts(text=chunk, language=language)
+                    # Built-in studio speaker — the high-level API resolves the
+                    # speaker embedding internally from the model's speaker bank.
+                    # NOTE: XTTS v2 is multi-speaker and *requires* a `speaker`
+                    # (or `speaker_wav`) argument; builtin_speaker_name is always
+                    # set at this point (see resolution above) so this never
+                    # silently fails and falls back to the un-replaced voice.
+                    wav = model.tts(text=chunk, language=language, speaker=builtin_speaker_name)
                     wav = np.array(wav, dtype=np.float32).squeeze()
 
                 chunk_arrays.append(wav)
