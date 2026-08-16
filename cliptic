@@ -3155,11 +3155,26 @@ def transcribe_captions(voice_path, log=None, translate_to=None):
         # Medium/small models are faster but timestamps not accurate enough, causing caption-voice mismatch
         try:
             model, device = _get_cached_whisper_model("large", tries=3, log=log_fn)
+        except (ModuleNotFoundError, ImportError) as e_import:
+            # Missing dependency (e.g. 'openai-whisper'/'torch' not installed). Retrying with
+            # another model size won't help, and blaming internet/disk space here would be
+            # misleading — tell the user exactly what to install instead.
+            log_fn(f"[whisper] Modulul necesar lipsește: {e_import}")
+            raise RuntimeError(
+                "Modulul 'whisper' (sau 'torch') nu este instalat. "
+                "Rulează: pip install openai-whisper torch"
+            ) from e_import
         except Exception as e_large:
             log_fn(f"[whisper] Failed to load 'large' model after retries: {e_large}")
             log_fn("[whisper] Falling back to 'medium' model (faster but less accurate timestamps).")
             try:
                 model, device = _get_cached_whisper_model("medium", tries=2, log=log_fn)
+            except (ModuleNotFoundError, ImportError) as e_import:
+                log_fn(f"[whisper] Modulul necesar lipsește: {e_import}")
+                raise RuntimeError(
+                    "Modulul 'whisper' (sau 'torch') nu este instalat. "
+                    "Rulează: pip install openai-whisper torch"
+                ) from e_import
             except Exception as e_medium:
                 log_fn(f"[whisper] Failed to load 'medium' model as well: {e_medium}")
                 raise RuntimeError("Whisper models unavailable. Verifică conexiunea la internet și spațiul pe disc.") from e_medium
