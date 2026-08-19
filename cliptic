@@ -2033,7 +2033,7 @@ def _get_genaipro_api_key():
         pass
     return None
 
-def generate_tts_audio(text, language='en', output_path=None, log=None):
+def generate_tts_audio(text, language='en', output_path=None, log=None, use_xtts_ro=None):
     """
     Generate Text-to-Speech audio.
 
@@ -2045,6 +2045,7 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
         language: Language code for TTS
         output_path: Path to save audio file (temp file if None)
         log: Optional logging function
+        use_xtts_ro: Force XTTS RO usage for this call (None = use global setting)
 
     Returns:
         Path to generated audio file or None if failed
@@ -2053,7 +2054,8 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
         return None
 
     # --- XTTS RO path ---
-    use_xtts_ro = globals().get('USE_XTTS_RO', False)
+    if use_xtts_ro is None:
+        use_xtts_ro = globals().get('USE_XTTS_RO', False)
     if use_xtts_ro:
         if log:
             log("=" * 60)
@@ -2136,7 +2138,7 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
         log("[TTS] ❌ GenAI Pro TTS failed. No voice generated.")
     return None
 
-def replace_voice_with_tts(caption_segments, language='en', log=None):
+def replace_voice_with_tts(caption_segments, language='en', log=None, use_xtts_ro=None):
     """
     Generate AI voice audio from caption segments.
     
@@ -2144,12 +2146,14 @@ def replace_voice_with_tts(caption_segments, language='en', log=None):
         caption_segments: List of caption segments with translated text
         language: Language code for TTS
         log: Optional logging function
+        use_xtts_ro: Force XTTS RO usage for this call (None = use global setting)
     
     Returns:
         Path to generated audio file or None if failed
     """
     # Allow XTTS RO to bypass GenAI Pro API key requirement
-    use_xtts_ro = globals().get('USE_XTTS_RO', False)
+    if use_xtts_ro is None:
+        use_xtts_ro = globals().get('USE_XTTS_RO', False)
     if not use_xtts_ro and not _get_genaipro_api_key():
         if log:
             log("[TTS] ⚠️  No GenAI Pro API key found in tts_config.json")
@@ -2170,7 +2174,7 @@ def replace_voice_with_tts(caption_segments, language='en', log=None):
         full_text = " ".join([seg.get("text", "") for seg in caption_segments])
         
         # Generate TTS audio
-        output_path = generate_tts_audio(full_text, language=language, log=log)
+        output_path = generate_tts_audio(full_text, language=language, log=log, use_xtts_ro=use_xtts_ro)
         
         if output_path and log:
             log(f"[TTS] Voice replacement complete: {output_path}")
@@ -5535,7 +5539,7 @@ def make_music_match_duration(music_clip, target_duration, log, music_gain=None)
         trimmed = trimmed.fx(audio_fadeout, MUSIC_FADEOUT_SECONDS)
         return trimmed.volumex(music_gain).set_duration(target_duration)
 
-def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None, target_language=None, translation_enabled=None, tts_language=None, silence_threshold_ms=300, caption_text_color=None, caption_stroke_color=None, caption_stroke_width=None, caption_font_size=None, caption_y_offset=None, pre_generated_voice=None, voice_gain=None, music_gain=None):
+def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None, use_xtts_ro=None, target_language=None, translation_enabled=None, tts_language=None, silence_threshold_ms=300, caption_text_color=None, caption_stroke_color=None, caption_stroke_width=None, caption_font_size=None, caption_y_offset=None, pre_generated_voice=None, voice_gain=None, music_gain=None):
     def log(s):
         q.put(str(s))
     def _check_stop():
@@ -5570,6 +5574,8 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
     # Determine if AI voice should be used - prefer parameter over global
     if use_ai_voice is None:
         use_ai_voice = globals().get('USE_AI_VOICE_REPLACEMENT', False)
+    if use_xtts_ro is None:
+        use_xtts_ro = globals().get('USE_XTTS_RO', False)
     
     # Determine language settings - prefer parameters over globals
     if target_language is None:
@@ -5911,7 +5917,8 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                     tts_audio_path = replace_voice_with_tts(
                         caption_segments, 
                         language=tts_language,
-                        log=log
+                        log=log,
+                        use_xtts_ro=use_xtts_ro
                     )
                     if tts_audio_path:
                         # Replace voice_clip with TTS audio
@@ -6185,6 +6192,7 @@ def _prepare_voice_for_job(job, job_index, total_jobs, q):
     target_language = job.get("target_language", 'none')
     translation_enabled = job.get("translation_enabled", False)
     tts_language = job.get("tts_language", 'en')
+    use_xtts_ro = bool(job.get("use_xtts_ro", globals().get('USE_XTTS_RO', False)))
     silence_threshold_ms = job.get("silence_threshold_ms", 300)
     
     # Auto-sync TTS language with translation target language
@@ -6236,7 +6244,8 @@ def _prepare_voice_for_job(job, job_index, total_jobs, q):
         tts_audio_path = replace_voice_with_tts(
             caption_segments,
             language=tts_language,
-            log=log
+            log=log,
+            use_xtts_ro=job.get("use_xtts_ro", globals().get('USE_XTTS_RO', False))
         )
         
         if not tts_audio_path:
@@ -6417,6 +6426,29 @@ def _submit_voice_for_job(job, job_index, total_jobs, q, release_whisper=True):
         # Step 3: Submit TTS (non-blocking for GenAI Pro)
         full_text = " ".join([seg.get("text", "") for seg in caption_segments])
 
+        # Step 3a: Local XTTS RO path (voice-clone / built-in XTTS speakers)
+        if use_xtts_ro:
+            log(f"[VOICE SUBMIT {job_index}/{total_jobs}] 🎙️ XTTS RO enabled — generating local TTS now...")
+            tts_audio_path = replace_voice_with_tts(
+                caption_segments,
+                language=tts_language,
+                log=log,
+                use_xtts_ro=True
+            )
+            if tts_audio_path:
+                log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ✅ XTTS RO audio ready")
+                return {
+                    'needs_polling': False,
+                    'tts_audio_path': tts_audio_path,
+                    'caption_segments': caption_segments,
+                    'tts_language': tts_language,
+                    'silence_threshold_ms': silence_threshold_ms,
+                    'full_text': full_text,
+                }
+            log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ❌ XTTS RO generation failed")
+            return None
+
+        # Step 3b: GenAI Pro path
         # Try GenAI Pro API key
         api_key = _get_genaipro_api_key()
 
@@ -6677,6 +6709,7 @@ def _run_video_job(job, job_index, total_jobs, q, pre_generated_voice=None):
                        dim_factor=job.get("dim_factor"),
                        effect_settings=effect_settings,
                        use_ai_voice=job.get("use_ai_voice", False),
+                       use_xtts_ro=job.get("use_xtts_ro", globals().get('USE_XTTS_RO', False)),
                        target_language=job.get("target_language", 'none'),
                        translation_enabled=job.get("translation_enabled", False),
                        tts_language=job.get("tts_language", 'en'),
@@ -11013,7 +11046,7 @@ class App:
                 'blur_overlay_intensity': job.get("blur_overlay_intensity", 20)
             }
             # Run in background thread so GUI remains responsive
-            _job_kwargs = {"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor"), "effect_settings": effect_settings, "use_ai_voice": job.get("use_ai_voice", False), "target_language": job.get("target_language", 'none'), "translation_enabled": job.get("translation_enabled", False), "tts_language": job.get("tts_language", 'en'), "caption_text_color": job.get("caption_text_color"), "caption_stroke_color": job.get("caption_stroke_color"), "caption_stroke_width": job.get("caption_stroke_width"), "caption_font_size": job.get("caption_font_size"), "caption_y_offset": job.get("caption_y_offset"), "voice_gain": job.get("voice_gain"), "music_gain": job.get("music_gain")}
+            _job_kwargs = {"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor"), "effect_settings": effect_settings, "use_ai_voice": job.get("use_ai_voice", False), "use_xtts_ro": job.get("use_xtts_ro", globals().get('USE_XTTS_RO', False)), "target_language": job.get("target_language", 'none'), "translation_enabled": job.get("translation_enabled", False), "tts_language": job.get("tts_language", 'en'), "caption_text_color": job.get("caption_text_color"), "caption_stroke_color": job.get("caption_stroke_color"), "caption_stroke_width": job.get("caption_stroke_width"), "caption_font_size": job.get("caption_font_size"), "caption_y_offset": job.get("caption_y_offset"), "voice_gain": job.get("voice_gain"), "music_gain": job.get("music_gain")}
             def _run_and_signal(video=job["video"], voice=job["voice"], music=job["music"], out=job["output"], font=job.get("font"), kw=_job_kwargs, _q=q):
                 try:
                     process_single_job(video, voice, music, out, _q, font, **kw)
@@ -11034,13 +11067,14 @@ class App:
     def _run_single_thread(self, video, voice, music, output, top_ratio, bottom_ratio):
         words_per_caption = self.words_per_caption_var.get()
         use_ai_voice = self.use_ai_voice_var.get()
+        use_xtts_ro = self.use_xtts_ro_var.get() if hasattr(self, "use_xtts_ro_var") else globals().get('USE_XTTS_RO', False)
         target_language = self.target_language_var.get()
         translation_enabled = self.translation_enabled_var.get()
         tts_language = self.tts_language_var.get()
         silence_threshold_ms = self.silence_threshold_var.get()
         voice_gain_val = self.voice_gain_var.get()
         music_gain_val = self.music_gain_var.get()
-        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption, use_ai_voice=use_ai_voice, target_language=target_language, translation_enabled=translation_enabled, tts_language=tts_language, silence_threshold_ms=silence_threshold_ms, voice_gain=voice_gain_val, music_gain=music_gain_val)
+        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption, use_ai_voice=use_ai_voice, use_xtts_ro=use_xtts_ro, target_language=target_language, translation_enabled=translation_enabled, tts_language=tts_language, silence_threshold_ms=silence_threshold_ms, voice_gain=voice_gain_val, music_gain=music_gain_val)
         self.q.put("[SINGLE_DONE]")
 
     def run_queue(self):
