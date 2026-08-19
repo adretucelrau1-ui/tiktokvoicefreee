@@ -12325,6 +12325,149 @@ class App:
         except Exception as e:
             messagebox.showerror("Reset Failed", f"Could not reset settings: {e}")
 
+    def _build_voice_clone_tab(self, parent):
+        """Build the Voice Cloning tab UI inside the given parent frame."""
+        import json, shutil
+        from pathlib import Path
+        from tkinter import filedialog, messagebox
+
+        SCRIPT_DIR = Path(__file__).resolve().parent
+        VOICES_DIR = SCRIPT_DIR / "voices"
+        CONFIG_PATH = SCRIPT_DIR / "xtts_ro_config.json"
+
+        def _load_cfg():
+            if CONFIG_PATH.exists():
+                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                    return json.load(f)
+            return {}
+
+        def _save_cfg(cfg):
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(cfg, f, indent=4, ensure_ascii=False)
+
+        def _get_voices():
+            VOICES_DIR.mkdir(exist_ok=True)
+            return [p.stem for p in sorted(VOICES_DIR.iterdir()) if p.suffix.lower() == ".wav"]
+
+        def _refresh_voice_list():
+            voices = _get_voices()
+            cfg = _load_cfg()
+            active = cfg.get("active_voice", "")
+            voice_mode = cfg.get("voice_mode", "custom")
+            lb_voices.delete(0, tk.END)
+            for v in voices:
+                marker = " ✔ ACTIVA" if (voice_mode == "custom" and v == active) else ""
+                lb_voices.insert(tk.END, f"{v}{marker}")
+            lbl_active.config(text=f"Voce activa: {active if voice_mode == 'custom' and active else '(predefinita)'}")
+
+        def _on_add_voice():
+            wav_path = filedialog.askopenfilename(
+                title="Selecteaza fisier WAV",
+                filetypes=[("WAV files", "*.wav"), ("All files", "*.*")]
+            )
+            if not wav_path:
+                return
+            name = tk.simpledialog.askstring("Nume voce", "Introdu un nume pentru aceasta voce:", parent=parent)
+            if not name or not name.strip():
+                return
+            safe_name = name.strip().replace(" ", "_")
+            dest = VOICES_DIR / f"{safe_name}.wav"
+            VOICES_DIR.mkdir(exist_ok=True)
+            try:
+                shutil.copy2(wav_path, str(dest))
+            except Exception as e:
+                messagebox.showerror("Eroare", f"Nu s-a putut copia fisierul:\n{e}")
+                return
+            cfg = _load_cfg()
+            if not cfg.get("active_voice"):
+                cfg["active_voice"] = safe_name
+                cfg["speaker_ref_path"] = str(dest)
+                cfg["voice_mode"] = "custom"
+                _save_cfg(cfg)
+            _refresh_voice_list()
+            messagebox.showinfo("Succes", f"Vocea '{safe_name}' a fost adaugata.")
+
+        def _on_select_voice():
+            sel = lb_voices.curselection()
+            if not sel:
+                messagebox.showwarning("Selectie", "Selecteaza o voce din lista.")
+                return
+            entry = lb_voices.get(sel[0])
+            voice_name = entry.split(" ✔")[0].strip()
+            voices = _get_voices()
+            if voice_name not in voices:
+                messagebox.showerror("Eroare", f"Vocea '{voice_name}' nu a fost gasita.")
+                return
+            cfg = _load_cfg()
+            cfg["active_voice"] = voice_name
+            cfg["speaker_ref_path"] = str(VOICES_DIR / f"{voice_name}.wav")
+            cfg["voice_mode"] = "custom"
+            _save_cfg(cfg)
+            _refresh_voice_list()
+
+        def _on_delete_voice():
+            sel = lb_voices.curselection()
+            if not sel:
+                messagebox.showwarning("Selectie", "Selecteaza o voce din lista.")
+                return
+            entry = lb_voices.get(sel[0])
+            voice_name = entry.split(" ✔")[0].strip()
+            if not messagebox.askyesno("Confirmare", f"Stergi vocea '{voice_name}'?"):
+                return
+            dest = VOICES_DIR / f"{voice_name}.wav"
+            try:
+                dest.unlink(missing_ok=True)
+            except Exception as e:
+                messagebox.showerror("Eroare", f"Nu s-a putut sterge:\n{e}")
+                return
+            cfg = _load_cfg()
+            if cfg.get("active_voice") == voice_name:
+                cfg["active_voice"] = ""
+                cfg["speaker_ref_path"] = ""
+                _save_cfg(cfg)
+            _refresh_voice_list()
+
+        # ---- UI layout ----
+        outer = tk.Frame(parent, bg=self.BG_DARK)
+        outer.pack(fill="both", expand=True, padx=12, pady=12)
+
+        tk.Label(outer, text="🎙️ Clonare Voci XTTS", bg=self.BG_DARK,
+                 fg=self.ACCENT_BLUE, font=("Segoe UI", 13, "bold")).pack(anchor="w", pady=(0, 8))
+
+        lbl_active = tk.Label(outer, text="Voce activa: ...", bg=self.BG_DARK,
+                              fg="#8b949e", font=("Segoe UI", 10))
+        lbl_active.pack(anchor="w", pady=(0, 6))
+
+        list_frame = tk.Frame(outer, bg=self.BG_DARK)
+        list_frame.pack(fill="both", expand=True)
+
+        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar.pack(side="right", fill="y")
+
+        lb_voices = tk.Listbox(list_frame, yscrollcommand=scrollbar.set,
+                               bg="#161b22", fg="#c9d1d9", selectbackground=self.ACCENT_BLUE,
+                               selectforeground="#ffffff", font=("Segoe UI", 10),
+                               borderwidth=0, highlightthickness=1,
+                               highlightbackground="#30363d", activestyle="none", height=10)
+        lb_voices.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=lb_voices.yview)
+
+        btn_frame = tk.Frame(outer, bg=self.BG_DARK)
+        btn_frame.pack(fill="x", pady=(8, 0))
+
+        btn_kw = dict(font=("Segoe UI", 10), relief="flat", cursor="hand2", padx=10, pady=4)
+
+        tk.Button(btn_frame, text="➕ Adauga WAV", bg=self.ACCENT_GREEN, fg="#ffffff",
+                  command=_on_add_voice, **btn_kw).pack(side="left", padx=(0, 6))
+        tk.Button(btn_frame, text="✔ Activeaza", bg=self.ACCENT_BLUE, fg="#ffffff",
+                  command=_on_select_voice, **btn_kw).pack(side="left", padx=(0, 6))
+        tk.Button(btn_frame, text="🗑 Sterge", bg=self.ACCENT_RED, fg="#ffffff",
+                  command=_on_delete_voice, **btn_kw).pack(side="left")
+        tk.Button(btn_frame, text="↻ Refresh", bg="#21262d", fg="#c9d1d9",
+                  command=_refresh_voice_list, **btn_kw).pack(side="right")
+
+        _refresh_voice_list()
+
     def poll_queue(self):
         try:
             processed = 0
