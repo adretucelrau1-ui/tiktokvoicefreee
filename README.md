@@ -56,7 +56,7 @@ To force CPU, run `set USE_CPU=1` before executing the script.
 
 ### Configuration (`xtts_ro_config.json`)
 
-```json
+```jsonc
 {
     "model_path": "",           // Path to XTTS v2 model dir, or "" to auto-download
     "speaker_ref_path": "xtts_speaker_ref.wav",

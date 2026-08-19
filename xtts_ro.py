@@ -475,6 +475,11 @@ def _resolve_language_for_model(model, requested_language: str, log=None) -> str
             log("[XTTS RO] ⚠ Could not verify tokenizer languages; using fallback 'en' for requested 'ro'.")
         return fallback_lang
 
+    if log and language != fallback_lang:
+        log(
+            f"[XTTS RO] ⚠ Could not verify support for language '{language}' "
+            f"(tokenizer metadata unavailable). Keeping requested language."
+        )
     return language
 
 
