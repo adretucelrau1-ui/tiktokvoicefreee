@@ -256,7 +256,21 @@ def _load_xtts_model(model_path: str, device: str, log=None):
         # Auto-download the official XTTS v2 model via the TTS API.
         # NOTE: TTS.api.TTS's `gpu=` constructor kwarg is deprecated in favor of
         # explicitly moving the model with `.to(device)`, which is what we do here.
-        model = CoquiTTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+        #
+        # PyTorch ≥ 2.6 changed the default of `weights_only` from False to True.
+        # The TTS library checkpoint contains custom classes (e.g. XttsConfig) that
+        # are not whitelisted under weights_only=True, so we temporarily patch
+        # torch.load to force weights_only=False while the model loads.
+        import torch as _torch
+        _original_torch_load = _torch.load
+        def _torch_load_no_weights_only(*args, **kwargs):
+            kwargs["weights_only"] = False
+            return _original_torch_load(*args, **kwargs)
+        _torch.load = _torch_load_no_weights_only
+        try:
+            model = CoquiTTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+        finally:
+            _torch.load = _original_torch_load
 
     if log:
         log("[XTTS RO] Model loaded.")
