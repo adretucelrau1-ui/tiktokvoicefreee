@@ -7173,8 +7173,8 @@ class App:
         main_notebook.add(tab_main, text="🧩 Cliptic")
         main_notebook.add(tab_empty, text="➕ Gol")
 
-        empty_label = ttk.Label(tab_empty, text="Acest tab este gol momentan.", style='SubHeader.TLabel')
-        empty_label.pack(anchor="nw", padx=16, pady=16)
+        # Populate previously empty tab with XTTS playground controls
+        self._build_voice_clone_tab(tab_empty)
 
         pw = ttk.PanedWindow(tab_main, orient="horizontal")
         pw.pack(fill="both", expand=True)
@@ -12326,8 +12326,10 @@ class App:
             messagebox.showerror("Reset Failed", f"Could not reset settings: {e}")
 
     def _build_voice_clone_tab(self, parent):
-        """Build the Voice Cloning tab UI inside the given parent frame."""
-        import json, shutil
+        """Build XTTS voice-clone + text-to-speech playground UI."""
+        import json
+        import shutil
+        import threading
         from pathlib import Path
         from tkinter import filedialog, messagebox
 
@@ -12335,39 +12337,137 @@ class App:
         VOICES_DIR = SCRIPT_DIR / "voices"
         CONFIG_PATH = SCRIPT_DIR / "xtts_ro_config.json"
 
+        DEFAULT_CFG = {
+            "voice_mode": "builtin",
+            "active_voice": "",
+            "speaker_ref_path": "",
+            "builtin_speaker": "Claribel Dervla",
+            "language": "ro",
+        }
+
         def _load_cfg():
+            cfg = dict(DEFAULT_CFG)
             if CONFIG_PATH.exists():
-                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                    return json.load(f)
-            return {}
+                try:
+                    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                        user_cfg = json.load(f)
+                    if isinstance(user_cfg, dict):
+                        cfg.update(user_cfg)
+                except Exception:
+                    pass
+            return cfg
 
         def _save_cfg(cfg):
+            merged = _load_cfg()
+            merged.update(cfg)
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-                json.dump(cfg, f, indent=4, ensure_ascii=False)
+                json.dump(merged, f, indent=4, ensure_ascii=False)
 
-        def _get_voices():
+        def _get_custom_voices():
             VOICES_DIR.mkdir(exist_ok=True)
             return [p.stem for p in sorted(VOICES_DIR.iterdir()) if p.suffix.lower() == ".wav"]
 
+        def _get_builtin_voices():
+            try:
+                from xtts_ro import list_builtin_speakers
+                voices = list_builtin_speakers()
+                if voices:
+                    return voices
+            except Exception:
+                pass
+            return ["Claribel Dervla"]
+
+        def _set_active_custom_voice(voice_name):
+            cfg = _load_cfg()
+            cfg["voice_mode"] = "custom"
+            cfg["active_voice"] = voice_name
+            cfg["speaker_ref_path"] = str(VOICES_DIR / f"{voice_name}.wav")
+            _save_cfg(cfg)
+
+        def _set_active_builtin_voice(voice_name):
+            cfg = _load_cfg()
+            cfg["voice_mode"] = "builtin"
+            cfg["builtin_speaker"] = voice_name
+            _save_cfg(cfg)
+
+        def _sync_mode_widgets():
+            mode = voice_mode_var.get()
+            is_custom = mode == "custom"
+            lb_voices.config(state="normal" if is_custom else "disabled")
+            btn_activate_custom.config(state="normal" if is_custom else "disabled")
+            builtin_combo.config(state="disabled" if is_custom else "readonly")
+
+        def _apply_voice_mode():
+            mode = voice_mode_var.get()
+            cfg = _load_cfg()
+            cfg["voice_mode"] = mode
+            if mode == "custom":
+                voices = _get_custom_voices()
+                active = custom_voice_var.get().strip()
+                if active in voices:
+                    cfg["active_voice"] = active
+                    cfg["speaker_ref_path"] = str(VOICES_DIR / f"{active}.wav")
+                elif voices:
+                    cfg["active_voice"] = voices[0]
+                    cfg["speaker_ref_path"] = str(VOICES_DIR / f"{voices[0]}.wav")
+                    custom_voice_var.set(voices[0])
+                else:
+                    cfg["active_voice"] = ""
+                    cfg["speaker_ref_path"] = ""
+            else:
+                builtin_name = builtin_voice_var.get().strip()
+                if not builtin_name:
+                    builtin = _get_builtin_voices()
+                    builtin_name = builtin[0] if builtin else "Claribel Dervla"
+                    builtin_voice_var.set(builtin_name)
+                cfg["builtin_speaker"] = builtin_name
+            _save_cfg(cfg)
+            _sync_mode_widgets()
+            _refresh_voice_list()
+
         def _refresh_voice_list():
-            voices = _get_voices()
+            voices = _get_custom_voices()
             cfg = _load_cfg()
             active = cfg.get("active_voice", "")
-            voice_mode = cfg.get("voice_mode", "custom")
+            voice_mode = cfg.get("voice_mode", "builtin")
+
             lb_voices.delete(0, tk.END)
-            for v in voices:
+            selected_index = None
+            for idx, v in enumerate(voices):
                 marker = " ✔ ACTIVA" if (voice_mode == "custom" and v == active) else ""
                 lb_voices.insert(tk.END, f"{v}{marker}")
-            lbl_active.config(text=f"Voce activa: {active if voice_mode == 'custom' and active else '(predefinita)'}")
+                if v == active:
+                    selected_index = idx
+            if selected_index is not None:
+                lb_voices.selection_set(selected_index)
+                lb_voices.see(selected_index)
+
+            custom_voice_var.set(active if active in voices else "")
+
+            builtin_voices = _get_builtin_voices()
+            builtin_combo["values"] = builtin_voices
+            builtin_cfg = cfg.get("builtin_speaker", "") or (builtin_voices[0] if builtin_voices else "Claribel Dervla")
+            builtin_voice_var.set(builtin_cfg)
+
+            voice_mode_var.set("custom" if voice_mode == "custom" else "builtin")
+            _sync_mode_widgets()
+
+            if voice_mode == "custom":
+                lbl_active.config(text=f"Voce activa: {active if active else '(nicio voce clonata selectata)'}")
+            else:
+                lbl_active.config(text=f"Voce activa: {builtin_voice_var.get()} (XTTS normal)")
+
+        def _on_mode_change():
+            _apply_voice_mode()
 
         def _on_add_voice():
             wav_path = filedialog.askopenfilename(
-                title="Selecteaza fisier WAV",
+                title="Selecteaza fisier WAV pentru clonare",
                 filetypes=[("WAV files", "*.wav"), ("All files", "*.*")]
             )
             if not wav_path:
                 return
-            name = tk.simpledialog.askstring("Nume voce", "Introdu un nume pentru aceasta voce:", parent=parent)
+            name = tk.simpledialog.askstring("Nume voce", "Introdu un nume pentru vocea clonata:", parent=parent)
             if not name or not name.strip():
                 return
             safe_name = name.strip().replace(" ", "_")
@@ -12378,41 +12478,38 @@ class App:
             except Exception as e:
                 messagebox.showerror("Eroare", f"Nu s-a putut copia fisierul:\n{e}")
                 return
+
             cfg = _load_cfg()
             if not cfg.get("active_voice"):
-                cfg["active_voice"] = safe_name
-                cfg["speaker_ref_path"] = str(dest)
-                cfg["voice_mode"] = "custom"
-                _save_cfg(cfg)
+                _set_active_custom_voice(safe_name)
+                voice_mode_var.set("custom")
             _refresh_voice_list()
-            messagebox.showinfo("Succes", f"Vocea '{safe_name}' a fost adaugata.")
+            messagebox.showinfo("Succes", f"Vocea '{safe_name}' a fost clonata cu succes.")
 
-        def _on_select_voice():
+        def _on_activate_custom_voice():
             sel = lb_voices.curselection()
             if not sel:
-                messagebox.showwarning("Selectie", "Selecteaza o voce din lista.")
+                messagebox.showwarning("Selectie", "Selecteaza o voce clonata din lista.")
                 return
             entry = lb_voices.get(sel[0])
             voice_name = entry.split(" ✔")[0].strip()
-            voices = _get_voices()
+            voices = _get_custom_voices()
             if voice_name not in voices:
                 messagebox.showerror("Eroare", f"Vocea '{voice_name}' nu a fost gasita.")
                 return
-            cfg = _load_cfg()
-            cfg["active_voice"] = voice_name
-            cfg["speaker_ref_path"] = str(VOICES_DIR / f"{voice_name}.wav")
-            cfg["voice_mode"] = "custom"
-            _save_cfg(cfg)
+            custom_voice_var.set(voice_name)
+            voice_mode_var.set("custom")
+            _set_active_custom_voice(voice_name)
             _refresh_voice_list()
 
         def _on_delete_voice():
             sel = lb_voices.curselection()
             if not sel:
-                messagebox.showwarning("Selectie", "Selecteaza o voce din lista.")
+                messagebox.showwarning("Selectie", "Selecteaza o voce clonata din lista.")
                 return
             entry = lb_voices.get(sel[0])
             voice_name = entry.split(" ✔")[0].strip()
-            if not messagebox.askyesno("Confirmare", f"Stergi vocea '{voice_name}'?"):
+            if not messagebox.askyesno("Confirmare", f"Stergi vocea clonata '{voice_name}'?"):
                 return
             dest = VOICES_DIR / f"{voice_name}.wav"
             try:
@@ -12424,18 +12521,139 @@ class App:
             if cfg.get("active_voice") == voice_name:
                 cfg["active_voice"] = ""
                 cfg["speaker_ref_path"] = ""
+                cfg["voice_mode"] = "builtin"
                 _save_cfg(cfg)
+                voice_mode_var.set("builtin")
             _refresh_voice_list()
+
+        def _on_activate_builtin():
+            builtin_name = builtin_voice_var.get().strip()
+            if not builtin_name:
+                messagebox.showwarning("Selectie", "Selecteaza o voce XTTS normala.")
+                return
+            _set_active_builtin_voice(builtin_name)
+            voice_mode_var.set("builtin")
+            _refresh_voice_list()
+
+        def _on_generate_audio():
+            text = txt_input.get("1.0", "end-1c").strip()
+            if not text:
+                messagebox.showwarning("Text lipsa", "Introdu textul pe care vrei sa il sintetizezi.")
+                return
+
+            out_path = filedialog.asksaveasfilename(
+                title="Salveaza audio XTTS",
+                defaultextension=".wav",
+                filetypes=[("WAV files", "*.wav"), ("All files", "*.*")],
+                initialfile="xtts_r_output.wav",
+            )
+            if not out_path:
+                return
+
+            mode = voice_mode_var.get()
+            cfg = _load_cfg()
+            if mode == "custom":
+                voices = _get_custom_voices()
+                selected_voice = custom_voice_var.get().strip()
+                if not selected_voice and lb_voices.curselection():
+                    selected_voice = lb_voices.get(lb_voices.curselection()[0]).split(" ✔")[0].strip()
+                if selected_voice not in voices:
+                    messagebox.showwarning("Voce lipsa", "Selecteaza o voce clonata valida sau cloneaza una noua.")
+                    return
+                cfg["voice_mode"] = "custom"
+                cfg["active_voice"] = selected_voice
+                cfg["speaker_ref_path"] = str(VOICES_DIR / f"{selected_voice}.wav")
+            else:
+                selected_builtin = builtin_voice_var.get().strip()
+                if not selected_builtin:
+                    messagebox.showwarning("Voce lipsa", "Selecteaza o voce XTTS normala.")
+                    return
+                cfg["voice_mode"] = "builtin"
+                cfg["builtin_speaker"] = selected_builtin
+            _save_cfg(cfg)
+
+            btn_generate.config(state="disabled")
+            lbl_generate_status.config(text="Generez audio XTTS-R...")
+
+            def _worker():
+                result = None
+                err = None
+                try:
+                    from xtts_ro import generate_xtts_ro
+                    result = generate_xtts_ro(text, output_path=out_path, config=cfg)
+                except Exception as e:
+                    err = e
+
+                def _finish():
+                    btn_generate.config(state="normal")
+                    if result:
+                        lbl_generate_status.config(text=f"Gata: {result}")
+                        messagebox.showinfo("Succes", f"Audio generat:\n{result}")
+                    else:
+                        lbl_generate_status.config(text="Generare esuata.")
+                        if err:
+                            messagebox.showerror("Eroare XTTS", f"Nu s-a putut genera audio:\n{err}")
+                        else:
+                            messagebox.showerror("Eroare XTTS", "Nu s-a putut genera audio.")
+
+                self.root.after(0, _finish)
+
+            threading.Thread(target=_worker, daemon=True).start()
 
         # ---- UI layout ----
         outer = tk.Frame(parent, bg=self.BG_DARK)
         outer.pack(fill="both", expand=True, padx=12, pady=12)
 
-        tk.Label(outer, text="🎙️ Clonare Voci XTTS", bg=self.BG_DARK,
-                 fg=self.ACCENT_BLUE, font=("Segoe UI", 13, "bold")).pack(anchor="w", pady=(0, 8))
+        tk.Label(
+            outer,
+            text="🎙️ XTTS-R Lab (ca ElevenLabs, local)",
+            bg=self.BG_DARK,
+            fg=self.ACCENT_BLUE,
+            font=("Segoe UI", 13, "bold"),
+        ).pack(anchor="w", pady=(0, 8))
 
-        lbl_active = tk.Label(outer, text="Voce activa: ...", bg=self.BG_DARK,
-                              fg="#8b949e", font=("Segoe UI", 10))
+        tk.Label(
+            outer,
+            text="Alege tipul de voce, cloneaza WAV-uri si genereaza audio din text fara limita.",
+            bg=self.BG_DARK,
+            fg="#8b949e",
+            font=("Segoe UI", 9),
+        ).pack(anchor="w", pady=(0, 10))
+
+        cfg_init = _load_cfg()
+        voice_mode_var = tk.StringVar(value="custom" if cfg_init.get("voice_mode") == "custom" else "builtin")
+        custom_voice_var = tk.StringVar(value=cfg_init.get("active_voice", ""))
+        builtin_voice_var = tk.StringVar(value=cfg_init.get("builtin_speaker", "Claribel Dervla"))
+
+        mode_frame = tk.Frame(outer, bg=self.BG_DARK)
+        mode_frame.pack(fill="x", pady=(0, 6))
+        tk.Label(mode_frame, text="Sursa voce:", bg=self.BG_DARK, fg="#c9d1d9", font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 8))
+        tk.Radiobutton(
+            mode_frame,
+            text="XTTS-R clonata",
+            variable=voice_mode_var,
+            value="custom",
+            command=_on_mode_change,
+            bg=self.BG_DARK,
+            fg="#c9d1d9",
+            selectcolor="#21262d",
+            activebackground=self.BG_DARK,
+            activeforeground="#ffffff",
+        ).pack(side="left", padx=(0, 10))
+        tk.Radiobutton(
+            mode_frame,
+            text="XTTS normal (builtin)",
+            variable=voice_mode_var,
+            value="builtin",
+            command=_on_mode_change,
+            bg=self.BG_DARK,
+            fg="#c9d1d9",
+            selectcolor="#21262d",
+            activebackground=self.BG_DARK,
+            activeforeground="#ffffff",
+        ).pack(side="left")
+
+        lbl_active = tk.Label(outer, text="Voce activa: ...", bg=self.BG_DARK, fg="#8b949e", font=("Segoe UI", 10))
         lbl_active.pack(anchor="w", pady=(0, 6))
 
         list_frame = tk.Frame(outer, bg=self.BG_DARK)
@@ -12444,27 +12662,86 @@ class App:
         scrollbar = tk.Scrollbar(list_frame)
         scrollbar.pack(side="right", fill="y")
 
-        lb_voices = tk.Listbox(list_frame, yscrollcommand=scrollbar.set,
-                               bg="#161b22", fg="#c9d1d9", selectbackground=self.ACCENT_BLUE,
-                               selectforeground="#ffffff", font=("Segoe UI", 10),
-                               borderwidth=0, highlightthickness=1,
-                               highlightbackground="#30363d", activestyle="none", height=10)
+        lb_voices = tk.Listbox(
+            list_frame,
+            yscrollcommand=scrollbar.set,
+            bg="#161b22",
+            fg="#c9d1d9",
+            selectbackground=self.ACCENT_BLUE,
+            selectforeground="#ffffff",
+            font=("Segoe UI", 10),
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground="#30363d",
+            activestyle="none",
+            height=7,
+        )
         lb_voices.pack(side="left", fill="both", expand=True)
         scrollbar.config(command=lb_voices.yview)
 
         btn_frame = tk.Frame(outer, bg=self.BG_DARK)
-        btn_frame.pack(fill="x", pady=(8, 0))
-
+        btn_frame.pack(fill="x", pady=(8, 4))
         btn_kw = dict(font=("Segoe UI", 10), relief="flat", cursor="hand2", padx=10, pady=4)
 
-        tk.Button(btn_frame, text="➕ Adauga WAV", bg=self.ACCENT_GREEN, fg="#ffffff",
-                  command=_on_add_voice, **btn_kw).pack(side="left", padx=(0, 6))
-        tk.Button(btn_frame, text="✔ Activeaza", bg=self.ACCENT_BLUE, fg="#ffffff",
-                  command=_on_select_voice, **btn_kw).pack(side="left", padx=(0, 6))
-        tk.Button(btn_frame, text="🗑 Sterge", bg=self.ACCENT_RED, fg="#ffffff",
-                  command=_on_delete_voice, **btn_kw).pack(side="left")
-        tk.Button(btn_frame, text="↻ Refresh", bg="#21262d", fg="#c9d1d9",
-                  command=_refresh_voice_list, **btn_kw).pack(side="right")
+        tk.Button(btn_frame, text="➕ Cloneaza WAV", bg=self.ACCENT_GREEN, fg="#ffffff", command=_on_add_voice, **btn_kw).pack(side="left", padx=(0, 6))
+        btn_activate_custom = tk.Button(btn_frame, text="✔ Activeaza clonata", bg=self.ACCENT_BLUE, fg="#ffffff", command=_on_activate_custom_voice, **btn_kw)
+        btn_activate_custom.pack(side="left", padx=(0, 6))
+        tk.Button(btn_frame, text="🗑 Sterge clonata", bg=self.ACCENT_RED, fg="#ffffff", command=_on_delete_voice, **btn_kw).pack(side="left")
+        tk.Button(btn_frame, text="↻ Refresh", bg="#21262d", fg="#c9d1d9", command=_refresh_voice_list, **btn_kw).pack(side="right")
+
+        builtin_frame = tk.Frame(outer, bg=self.BG_DARK)
+        builtin_frame.pack(fill="x", pady=(0, 8))
+        tk.Label(builtin_frame, text="Voce XTTS normala:", bg=self.BG_DARK, fg="#c9d1d9", font=("Segoe UI", 10)).pack(side="left")
+        builtin_combo = ttk.Combobox(builtin_frame, textvariable=builtin_voice_var, state="readonly", width=28)
+        builtin_combo.pack(side="left", padx=(8, 6))
+        tk.Button(builtin_frame, text="Use XTTS normal", bg="#21262d", fg="#c9d1d9", command=_on_activate_builtin, **btn_kw).pack(side="left")
+
+        txt_frame = tk.Frame(outer, bg=self.BG_DARK)
+        txt_frame.pack(fill="both", expand=True, pady=(4, 0))
+        tk.Label(
+            txt_frame,
+            text="Text de sintetizat (fara limita):",
+            bg=self.BG_DARK,
+            fg="#c9d1d9",
+            font=("Segoe UI", 10, "bold"),
+        ).pack(anchor="w", pady=(0, 4))
+        txt_input = tk.Text(
+            txt_frame,
+            wrap="word",
+            height=8,
+            bg="#0d1117",
+            fg="#c9d1d9",
+            insertbackground="#c9d1d9",
+            relief="solid",
+            borderwidth=1,
+            highlightthickness=1,
+            highlightbackground="#30363d",
+            font=("Segoe UI", 10),
+        )
+        txt_input.pack(side="left", fill="both", expand=True)
+        txt_scroll = tk.Scrollbar(txt_frame, command=txt_input.yview)
+        txt_scroll.pack(side="right", fill="y")
+        txt_input.config(yscrollcommand=txt_scroll.set)
+
+        generate_frame = tk.Frame(outer, bg=self.BG_DARK)
+        generate_frame.pack(fill="x", pady=(8, 0))
+        btn_generate = tk.Button(
+            generate_frame,
+            text="🎧 Genereaza audio XTTS-R",
+            bg=self.ACCENT_BLUE,
+            fg="#ffffff",
+            command=_on_generate_audio,
+            **btn_kw,
+        )
+        btn_generate.pack(side="left")
+        lbl_generate_status = tk.Label(
+            generate_frame,
+            text="",
+            bg=self.BG_DARK,
+            fg="#8b949e",
+            font=("Segoe UI", 9),
+        )
+        lbl_generate_status.pack(side="left", padx=(10, 0))
 
         _refresh_voice_list()
 
