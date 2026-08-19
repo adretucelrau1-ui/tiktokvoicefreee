@@ -72,6 +72,9 @@ To force CPU, run `set USE_CPU=1` before executing the script.
 }
 ```
 
+If your XTTS checkpoint does not support `"ro"` in its tokenizer, synthesis
+automatically falls back to `"en"` to avoid chunk failures.
+
 ### Standalone CLI
 
 ```bash

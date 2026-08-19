@@ -409,6 +409,75 @@ def _crossfade_concat(arrays: list, sample_rate: int, crossfade_ms: int):
     return result
 
 
+def _resolve_language_for_model(model, requested_language: str, log=None) -> str:
+    """
+    Resolve a language code that this XTTS tokenizer accepts.
+
+    If the requested language is unsupported, falls back to English.
+    """
+    language = str(requested_language or "").strip().lower() or "en"
+    tokenizer = getattr(model, "tokenizer", None)
+    fallback_lang = "en"
+
+    def _normalize_langs(raw_langs):
+        if raw_langs is None:
+            return []
+        if isinstance(raw_langs, dict):
+            raw_langs = raw_langs.keys()
+        return sorted({str(x).strip().lower() for x in raw_langs if str(x).strip()})
+
+    def _probe(lang: str):
+        if tokenizer is None or not hasattr(tokenizer, "preprocess_text"):
+            return None
+        try:
+            tokenizer.preprocess_text("test", lang)
+            return True
+        except NotImplementedError:
+            return False
+        except Exception:
+            return None
+
+    supported = _normalize_langs(getattr(tokenizer, "languages", None))
+    if supported:
+        if language in supported:
+            return language
+        base_match = next((l for l in supported if l.split("-")[0] == language), None)
+        if base_match:
+            if log and base_match != language:
+                log(f"[XTTS RO] ℹ Language '{language}' mapped to tokenizer language '{base_match}'")
+            return base_match
+        if fallback_lang not in supported:
+            fallback_lang = next((l for l in supported if l.split("-")[0] == "en"), supported[0])
+        if log:
+            log(
+                f"[XTTS RO] ⚠ Language '{language}' is not supported by this model's tokenizer "
+                f"(supported: {supported}). Falling back to '{fallback_lang}'."
+            )
+        return fallback_lang
+
+    probe_requested = _probe(language)
+    if probe_requested is True:
+        return language
+
+    if probe_requested is False:
+        probe_fallback = _probe(fallback_lang)
+        if probe_fallback is False:
+            return language
+        if log:
+            log(f"[XTTS RO] ⚠ Language '{language}' is not supported. Falling back to '{fallback_lang}'.")
+        return fallback_lang
+
+    # Some tokenizer builds do not expose a language list; `ro` is unsupported
+    # in public XTTS v2 checkpoints, so prefer a safe fallback instead of
+    # letting each chunk fail with NotImplementedError.
+    if language == "ro":
+        if log:
+            log("[XTTS RO] ⚠ Could not verify tokenizer languages; using fallback 'en' for requested 'ro'.")
+        return fallback_lang
+
+    return language
+
+
 # ---------------------------------------------------------------------------
 # Core synthesis function
 # ---------------------------------------------------------------------------
@@ -565,19 +634,8 @@ def generate_xtts_ro(
         chunks = _split_into_chunks(text, max_chars)
         total = len(chunks)
 
-        # Validate language code against what this model's tokenizer supports.
-        # XTTS v2 does not include Romanian ("ro") in its tokenizer; the best
-        # Latin-script fallback is English ("en") which handles Romanian
-        # characters correctly enough for voice-cloned synthesis.
-        supported_langs = getattr(getattr(model, "tokenizer", None), "languages", None)
-        if supported_langs is not None and language not in supported_langs:
-            fallback_lang = "en"
-            if log:
-                log(
-                    f"[XTTS RO] ⚠ Language '{language}' is not supported by this model's tokenizer "
-                    f"(supported: {sorted(supported_langs)}). Falling back to '{fallback_lang}'."
-                )
-            language = fallback_lang
+        # Resolve the language against this checkpoint's tokenizer capabilities.
+        language = _resolve_language_for_model(model, language, log=log)
         if log:
             log(f"[XTTS RO] Text length: {len(text)} chars → {total} chunk(s)")
 
