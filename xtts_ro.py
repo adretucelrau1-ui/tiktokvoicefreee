@@ -499,9 +499,28 @@ def generate_xtts_ro(
         if speaker_ref:
             if log:
                 log("[XTTS RO] Extracting speaker conditioning latents…")
-            gpt_cond_latent, speaker_embedding = model.get_conditioning_latents(
-                audio_path=[speaker_ref]
-            )
+            # Newer torchaudio versions (≥ 2.6) default to the torchcodec backend
+            # which may not be installed.  Patch torchaudio.load to use soundfile
+            # as a fallback for the duration of this call so the WAV loads fine.
+            import torchaudio as _torchaudio
+            import torch as _torch
+            _orig_torchaudio_load = _torchaudio.load
+            def _torchaudio_load_sf_fallback(path, *args, **kwargs):
+                try:
+                    return _orig_torchaudio_load(path, *args, **kwargs)
+                except (ImportError, RuntimeError):
+                    import soundfile as _sf
+                    import numpy as _np
+                    data, sr = _sf.read(str(path), dtype="float32", always_2d=True)
+                    tensor = _torch.from_numpy(data.T)  # (channels, samples)
+                    return tensor, sr
+            _torchaudio.load = _torchaudio_load_sf_fallback
+            try:
+                gpt_cond_latent, speaker_embedding = model.get_conditioning_latents(
+                    audio_path=[speaker_ref]
+                )
+            finally:
+                _torchaudio.load = _orig_torchaudio_load
         else:
             # For built-in speakers, resolve the speaker embedding from the
             # model's own speaker bank and use the same low-level inference
