@@ -564,6 +564,20 @@ def generate_xtts_ro(
         # Split text into chunks
         chunks = _split_into_chunks(text, max_chars)
         total = len(chunks)
+
+        # Validate language code against what this model's tokenizer supports.
+        # XTTS v2 does not include Romanian ("ro") in its tokenizer; the best
+        # Latin-script fallback is English ("en") which handles Romanian
+        # characters correctly enough for voice-cloned synthesis.
+        supported_langs = getattr(getattr(model, "tokenizer", None), "languages", None)
+        if supported_langs is not None and language not in supported_langs:
+            fallback_lang = "en"
+            if log:
+                log(
+                    f"[XTTS RO] ⚠ Language '{language}' is not supported by this model's tokenizer "
+                    f"(supported: {sorted(supported_langs)}). Falling back to '{fallback_lang}'."
+                )
+            language = fallback_lang
         if log:
             log(f"[XTTS RO] Text length: {len(text)} chars → {total} chunk(s)")
 
