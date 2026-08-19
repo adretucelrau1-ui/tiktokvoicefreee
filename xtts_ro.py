@@ -413,11 +413,24 @@ def _resolve_language_for_model(model, requested_language: str, log=None) -> str
     """
     Resolve a language code that this XTTS tokenizer accepts.
 
-    If the requested language is unsupported, falls back to English.
+    If the requested language is unsupported, falls back using a preferred chain.
+    Romanian ('ro') falls back to French ('fr') first, then Portuguese ('pt'),
+    then English ('en') — because Romanian is a Romance language and French/
+    Portuguese phonemics are far closer to Romanian than English, producing
+    substantially better synthesis quality when the model lacks native 'ro' support.
     """
     language = str(requested_language or "").strip().lower() or "en"
     tokenizer = getattr(model, "tokenizer", None)
-    fallback_lang = "en"
+
+    # Ordered fallback chains per language.  When the requested language is not
+    # supported by this checkpoint's tokenizer, each candidate is tried in order
+    # and the first one found in the supported set is used.
+    _FALLBACK_CHAINS = {
+        "ro": ["fr", "pt", "en"],
+    }
+    fallback_chain = _FALLBACK_CHAINS.get(language, ["en"])
+    # Default fallback (last resort)
+    fallback_lang = fallback_chain[-1]
 
     def _normalize_langs(raw_langs):
         if raw_langs is None:
@@ -437,6 +450,19 @@ def _resolve_language_for_model(model, requested_language: str, log=None) -> str
         except Exception:
             return None
 
+    def _pick_fallback(supported):
+        """Return the first language in fallback_chain that is in *supported*."""
+        for candidate in fallback_chain:
+            if candidate in supported:
+                return candidate
+            # also try base code match (e.g. 'fr' matches 'fr-fr')
+            base = next((l for l in supported if l.split("-")[0] == candidate), None)
+            if base:
+                return base
+        # last resort: first English-ish entry or first supported language
+        en_match = next((l for l in supported if l.split("-")[0] == "en"), None)
+        return en_match or (supported[0] if supported else fallback_lang)
+
     supported = _normalize_langs(getattr(tokenizer, "languages", None))
     if supported:
         if language in supported:
@@ -446,34 +472,46 @@ def _resolve_language_for_model(model, requested_language: str, log=None) -> str
             if log and base_match != language:
                 log(f"[XTTS RO] ℹ Language '{language}' mapped to tokenizer language '{base_match}'")
             return base_match
-        if fallback_lang not in supported:
-            fallback_lang = next((l for l in supported if l.split("-")[0] == "en"), supported[0])
+        chosen = _pick_fallback(supported)
         if log:
             log(
                 f"[XTTS RO] ⚠ Language '{language}' is not supported by this model's tokenizer "
-                f"(supported: {supported}). Falling back to '{fallback_lang}'."
+                f"(supported: {supported}). Falling back to '{chosen}'."
             )
-        return fallback_lang
+        return chosen
 
     probe_requested = _probe(language)
     if probe_requested is True:
         return language
 
     if probe_requested is False:
-        probe_fallback = _probe(fallback_lang)
-        if probe_fallback is False:
-            return language
-        if log:
-            log(f"[XTTS RO] ⚠ Language '{language}' is not supported. Falling back to '{fallback_lang}'.")
+        # Try each fallback in order via probe
+        for candidate in fallback_chain:
+            probe_fb = _probe(candidate)
+            if probe_fb is True:
+                if log:
+                    log(f"[XTTS RO] ⚠ Language '{language}' is not supported. Falling back to '{candidate}'.")
+                return candidate
+            if probe_fb is False:
+                continue
+            # probe returned None (unknown) — use this candidate as best guess
+            if log:
+                log(f"[XTTS RO] ⚠ Language '{language}' is not supported. Falling back to '{candidate}'.")
+            return candidate
         return fallback_lang
 
-    # Some tokenizer builds do not expose a language list; `ro` is unsupported
-    # in public XTTS v2 checkpoints, so prefer a safe fallback instead of
-    # letting each chunk fail with NotImplementedError.
-    if language == "ro":
+    # Tokenizer exposes no language metadata and probe returned None (unknown).
+    # For 'ro' specifically: rather than defaulting to English, use the first
+    # Romance-language fallback so that Romanian text phonemics are handled
+    # more naturally.  The per-chunk try/except will catch any runtime failure.
+    if fallback_chain[0] != fallback_lang:
+        fb = fallback_chain[0]
         if log:
-            log("[XTTS RO] ⚠ Could not verify tokenizer languages; using fallback 'en' for requested 'ro'.")
-        return fallback_lang
+            log(
+                f"[XTTS RO] ⚠ Could not verify tokenizer languages for '{language}'; "
+                f"using preferred fallback '{fb}'."
+            )
+        return fb
 
     if log and language != fallback_lang:
         log(
