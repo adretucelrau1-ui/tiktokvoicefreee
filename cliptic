@@ -6732,6 +6732,7 @@ def queue_worker(jobs, q):
     
     # Check if any jobs use AI voice — if so, use non-blocking voice pipeline
     any_ai_voice = any(job.get("use_ai_voice", False) for job in jobs)
+    any_xtts_ro_ai = any(job.get("use_ai_voice", False) and job.get("use_xtts_ro", False) for job in jobs)
     
     if not any_ai_voice or len(jobs) <= 1:
         # No AI voice jobs or single job — use simple sequential processing
@@ -6756,7 +6757,7 @@ def queue_worker(jobs, q):
     log("━"*60)
     log("[QUEUE] 🚀 INTERLEAVED NON-BLOCKING VOICE PIPELINE")
     log(f"[QUEUE] {total} jobs — submitting voices & processing videos concurrently")
-    concurrency_preview = max(1, globals().get('VOICE_SUBMISSION_CONCURRENCY', 3))
+    concurrency_preview = 1 if any_xtts_ro_ai else max(1, globals().get('VOICE_SUBMISSION_CONCURRENCY', 3))
     log(f"[QUEUE] Concurrent voice submissions: {concurrency_preview} | Completions: parallel")
     log("━"*60)
     log("")
@@ -6785,7 +6786,7 @@ def queue_worker(jobs, q):
     # Up to VOICE_SUBMISSION_CONCURRENCY jobs are submitted to GenAI Pro at
     # the same time.  Whisper transcription still serialises internally (GPU
     # is not thread-safe), but audio extraction and TTS API POSTs overlap.
-    concurrency = max(1, globals().get('VOICE_SUBMISSION_CONCURRENCY', 3))
+    concurrency = 1 if any_xtts_ro_ai else max(1, globals().get('VOICE_SUBMISSION_CONCURRENCY', 3))
     _submit_sem = threading.Semaphore(concurrency)
     # Counts how many submitter threads are still running (used to know when
     # the Whisper model can be released).
@@ -6793,6 +6794,8 @@ def queue_worker(jobs, q):
     _active_submitters = [0]        # mutable int inside a list for closure
 
     log(f"[QUEUE] ⚡ Concurrent voice submissions: {concurrency} at a time")
+    if any_xtts_ro_ai:
+        log("[QUEUE] ℹ XTTS RO detected in queue — limiting voice submissions to 1 for stability")
 
     def _submit_one(idx):
         """Thread: submit one voice job (bounded by _submit_sem semaphore)."""

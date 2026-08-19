@@ -59,6 +59,8 @@ To force CPU, run `set USE_CPU=1` before executing the script.
 ```jsonc
 {
     "model_path": "",           // Path to XTTS v2 model dir, or "" to auto-download
+    "voice_mode": "custom",     // "custom" = voce clonata, "builtin" = XTTS normal
+    "active_voice": "nume_voce",// Numele fisierului din voices/ (fara .wav)
     "speaker_ref_path": "xtts_speaker_ref.wav",
     "language": "ro",
     "max_chars_per_chunk": 220, // Long text is split into chunks of this size
