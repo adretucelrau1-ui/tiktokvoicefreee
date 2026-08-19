@@ -12600,68 +12600,125 @@ class App:
 
             threading.Thread(target=_worker, daemon=True).start()
 
-        # ---- UI layout ----
+        # ---- UI layout — GenAI Pro style (left text | right settings) ----
         outer = tk.Frame(parent, bg=self.BG_DARK)
-        outer.pack(fill="both", expand=True, padx=12, pady=12)
-
-        tk.Label(
-            outer,
-            text="🎙️ XTTS-R Lab (ca ElevenLabs, local)",
-            bg=self.BG_DARK,
-            fg=self.ACCENT_BLUE,
-            font=("Segoe UI", 13, "bold"),
-        ).pack(anchor="w", pady=(0, 8))
-
-        tk.Label(
-            outer,
-            text="Alege tipul de voce, cloneaza WAV-uri si genereaza audio din text fara limita.",
-            bg=self.BG_DARK,
-            fg="#8b949e",
-            font=("Segoe UI", 9),
-        ).pack(anchor="w", pady=(0, 10))
+        outer.pack(fill="both", expand=True)
 
         cfg_init = _load_cfg()
         voice_mode_var = tk.StringVar(value="custom" if cfg_init.get("voice_mode") == "custom" else "builtin")
         custom_voice_var = tk.StringVar(value=cfg_init.get("active_voice", ""))
         builtin_voice_var = tk.StringVar(value=cfg_init.get("builtin_speaker", "Claribel Dervla"))
+        speed_var = tk.DoubleVar(value=float(cfg_init.get("speed", 1.0)))
+        temperature_var = tk.DoubleVar(value=float(cfg_init.get("temperature", 0.65)))
+        top_p_var = tk.DoubleVar(value=float(cfg_init.get("top_p", 0.85)))
 
-        mode_frame = tk.Frame(outer, bg=self.BG_DARK)
-        mode_frame.pack(fill="x", pady=(0, 6))
-        tk.Label(mode_frame, text="Sursa voce:", bg=self.BG_DARK, fg="#c9d1d9", font=("Segoe UI", 10, "bold")).pack(side="left", padx=(0, 8))
-        tk.Radiobutton(
-            mode_frame,
-            text="XTTS-R clonata",
-            variable=voice_mode_var,
-            value="custom",
-            command=_on_mode_change,
-            bg=self.BG_DARK,
+        btn_kw = dict(font=("Segoe UI", 10), relief="flat", cursor="hand2", padx=10, pady=4)
+
+        # ── Left panel: text area ──────────────────────────────────────────
+        left_panel = tk.Frame(outer, bg=self.BG_DARK)
+        left_panel.pack(side="left", fill="both", expand=True)
+
+        txt_input = tk.Text(
+            left_panel,
+            wrap="word",
+            bg="#161b22",
             fg="#c9d1d9",
-            selectcolor="#21262d",
-            activebackground=self.BG_DARK,
-            activeforeground="#ffffff",
-        ).pack(side="left", padx=(0, 10))
-        tk.Radiobutton(
-            mode_frame,
-            text="XTTS normal (builtin)",
-            variable=voice_mode_var,
-            value="builtin",
-            command=_on_mode_change,
-            bg=self.BG_DARK,
+            insertbackground="#c9d1d9",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground="#30363d",
+            font=("Segoe UI", 11),
+        )
+        txt_input.pack(fill="both", expand=True)
+
+        # Placeholder
+        _PLACEHOLDER = "Introdu textul pentru a genera vocea..."
+        txt_input.insert("1.0", _PLACEHOLDER)
+        txt_input.config(fg="#555e6b")
+
+        def _on_text_focus_in(event):
+            if txt_input.get("1.0", "end-1c") == _PLACEHOLDER:
+                txt_input.delete("1.0", tk.END)
+                txt_input.config(fg="#c9d1d9")
+
+        def _on_text_focus_out(event):
+            if not txt_input.get("1.0", "end-1c").strip():
+                txt_input.insert("1.0", _PLACEHOLDER)
+                txt_input.config(fg="#555e6b")
+            _update_char_count()
+
+        def _update_char_count(event=None):
+            content = txt_input.get("1.0", "end-1c")
+            if content == _PLACEHOLDER:
+                lbl_char_count.config(text="0 caractere")
+            else:
+                lbl_char_count.config(text=f"{len(content)} caractere")
+
+        txt_input.bind("<FocusIn>", _on_text_focus_in)
+        txt_input.bind("<FocusOut>", _on_text_focus_out)
+        txt_input.bind("<KeyRelease>", _update_char_count)
+
+        bottom_bar = tk.Frame(left_panel, bg="#0d1117", pady=6)
+        bottom_bar.pack(fill="x")
+
+        btn_generate = tk.Button(
+            bottom_bar,
+            text="🎧 Genereaza vocea",
+            bg="#21262d",
             fg="#c9d1d9",
-            selectcolor="#21262d",
-            activebackground=self.BG_DARK,
-            activeforeground="#ffffff",
-        ).pack(side="left")
+            command=_on_generate_audio,
+            font=("Segoe UI", 11),
+            relief="flat",
+            cursor="hand2",
+            padx=16,
+            pady=6,
+        )
+        btn_generate.pack(side="left", padx=(10, 0))
 
-        lbl_active = tk.Label(outer, text="Voce activa: ...", bg=self.BG_DARK, fg="#8b949e", font=("Segoe UI", 10))
-        lbl_active.pack(anchor="w", pady=(0, 6))
+        lbl_char_count = tk.Label(bottom_bar, text="0 caractere", bg="#0d1117", fg="#8b949e", font=("Segoe UI", 9))
+        lbl_char_count.pack(side="left", padx=(12, 0))
 
-        list_frame = tk.Frame(outer, bg=self.BG_DARK)
-        list_frame.pack(fill="both", expand=True)
+        lbl_generate_status = tk.Label(bottom_bar, text="", bg="#0d1117", fg="#8b949e", font=("Segoe UI", 9))
+        lbl_generate_status.pack(side="left", padx=(12, 0))
 
+        # Divider line
+        tk.Frame(outer, bg="#30363d", width=1).pack(side="left", fill="y")
+
+        # ── Right panel: settings ─────────────────────────────────────────
+        right_panel = tk.Frame(outer, bg=self.BG_DARK, width=300)
+        right_panel.pack(side="left", fill="y", padx=(0, 0))
+        right_panel.pack_propagate(False)
+
+        rp = tk.Frame(right_panel, bg=self.BG_DARK)
+        rp.pack(fill="both", expand=True, padx=14, pady=12)
+
+        def _section_label(text):
+            tk.Label(rp, text=text, bg=self.BG_DARK, fg="#c9d1d9",
+                     font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 4))
+
+        # Voice source radio buttons
+        _section_label("Voce")
+        lbl_active = tk.Label(rp, text="...", bg=self.BG_DARK, fg="#8b949e", font=("Segoe UI", 9),
+                              wraplength=260, justify="left")
+        lbl_active.pack(anchor="w", pady=(0, 4))
+
+        mode_frame = tk.Frame(rp, bg=self.BG_DARK)
+        mode_frame.pack(fill="x", pady=(0, 4))
+        tk.Radiobutton(mode_frame, text="XTTS-R clonata", variable=voice_mode_var, value="custom",
+                       command=_on_mode_change, bg=self.BG_DARK, fg="#c9d1d9",
+                       selectcolor="#21262d", activebackground=self.BG_DARK,
+                       activeforeground="#ffffff").pack(side="left", padx=(0, 10))
+        tk.Radiobutton(mode_frame, text="XTTS normal", variable=voice_mode_var, value="builtin",
+                       command=_on_mode_change, bg=self.BG_DARK, fg="#c9d1d9",
+                       selectcolor="#21262d", activebackground=self.BG_DARK,
+                       activeforeground="#ffffff").pack(side="left")
+
+        # Custom voice list
+        list_frame = tk.Frame(rp, bg=self.BG_DARK)
+        list_frame.pack(fill="x", pady=(0, 4))
         scrollbar = tk.Scrollbar(list_frame)
         scrollbar.pack(side="right", fill="y")
-
         lb_voices = tk.Listbox(
             list_frame,
             yscrollcommand=scrollbar.set,
@@ -12674,74 +12731,180 @@ class App:
             highlightthickness=1,
             highlightbackground="#30363d",
             activestyle="none",
-            height=7,
+            height=4,
         )
         lb_voices.pack(side="left", fill="both", expand=True)
         scrollbar.config(command=lb_voices.yview)
 
-        btn_frame = tk.Frame(outer, bg=self.BG_DARK)
-        btn_frame.pack(fill="x", pady=(8, 4))
-        btn_kw = dict(font=("Segoe UI", 10), relief="flat", cursor="hand2", padx=10, pady=4)
+        clone_btn_frame = tk.Frame(rp, bg=self.BG_DARK)
+        clone_btn_frame.pack(fill="x", pady=(4, 2))
+        tk.Button(clone_btn_frame, text="➕ Cloneaza", bg=self.ACCENT_GREEN, fg="#ffffff",
+                  command=_on_add_voice, **btn_kw).pack(side="left", padx=(0, 4))
+        btn_activate_custom = tk.Button(clone_btn_frame, text="✔ Activeaza", bg=self.ACCENT_BLUE,
+                                        fg="#ffffff", command=_on_activate_custom_voice, **btn_kw)
+        btn_activate_custom.pack(side="left", padx=(0, 4))
+        tk.Button(clone_btn_frame, text="🗑", bg=self.ACCENT_RED, fg="#ffffff",
+                  command=_on_delete_voice, **btn_kw).pack(side="left")
+        tk.Button(clone_btn_frame, text="↻", bg="#21262d", fg="#c9d1d9",
+                  command=_refresh_voice_list, **btn_kw).pack(side="right")
 
-        tk.Button(btn_frame, text="➕ Cloneaza WAV", bg=self.ACCENT_GREEN, fg="#ffffff", command=_on_add_voice, **btn_kw).pack(side="left", padx=(0, 6))
-        btn_activate_custom = tk.Button(btn_frame, text="✔ Activeaza clonata", bg=self.ACCENT_BLUE, fg="#ffffff", command=_on_activate_custom_voice, **btn_kw)
-        btn_activate_custom.pack(side="left", padx=(0, 6))
-        tk.Button(btn_frame, text="🗑 Sterge clonata", bg=self.ACCENT_RED, fg="#ffffff", command=_on_delete_voice, **btn_kw).pack(side="left")
-        tk.Button(btn_frame, text="↻ Refresh", bg="#21262d", fg="#c9d1d9", command=_refresh_voice_list, **btn_kw).pack(side="right")
+        # Builtin voice selector
+        builtin_frame = tk.Frame(rp, bg=self.BG_DARK)
+        builtin_frame.pack(fill="x", pady=(4, 2))
+        builtin_combo = ttk.Combobox(builtin_frame, textvariable=builtin_voice_var, state="readonly", width=22)
+        builtin_combo.pack(side="left", padx=(0, 6))
+        tk.Button(builtin_frame, text="Activeaza", bg="#21262d", fg="#c9d1d9",
+                  command=_on_activate_builtin, **btn_kw).pack(side="left")
 
-        builtin_frame = tk.Frame(outer, bg=self.BG_DARK)
-        builtin_frame.pack(fill="x", pady=(0, 8))
-        tk.Label(builtin_frame, text="Voce XTTS normala:", bg=self.BG_DARK, fg="#c9d1d9", font=("Segoe UI", 10)).pack(side="left")
-        builtin_combo = ttk.Combobox(builtin_frame, textvariable=builtin_voice_var, state="readonly", width=28)
-        builtin_combo.pack(side="left", padx=(8, 6))
-        tk.Button(builtin_frame, text="Use XTTS normal", bg="#21262d", fg="#c9d1d9", command=_on_activate_builtin, **btn_kw).pack(side="left")
+        # Separator
+        tk.Frame(rp, bg="#30363d", height=1).pack(fill="x", pady=(10, 4))
 
-        txt_frame = tk.Frame(outer, bg=self.BG_DARK)
-        txt_frame.pack(fill="both", expand=True, pady=(4, 0))
-        tk.Label(
-            txt_frame,
-            text="Text de sintetizat (fara limita):",
-            bg=self.BG_DARK,
-            fg="#c9d1d9",
-            font=("Segoe UI", 10, "bold"),
-        ).pack(anchor="w", pady=(0, 4))
-        txt_input = tk.Text(
-            txt_frame,
-            wrap="word",
-            height=8,
-            bg="#0d1117",
-            fg="#c9d1d9",
-            insertbackground="#c9d1d9",
-            relief="solid",
-            borderwidth=1,
-            highlightthickness=1,
-            highlightbackground="#30363d",
-            font=("Segoe UI", 10),
+        # Speed slider
+        _section_label("Viteza")
+        speed_row = tk.Frame(rp, bg=self.BG_DARK)
+        speed_row.pack(fill="x")
+        spd_lbl = tk.Label(speed_row, text="1.00", bg=self.BG_DARK, fg="#8b949e", font=("Segoe UI", 9), width=4)
+        spd_lbl.pack(side="right")
+        spd_slider = tk.Scale(
+            speed_row, from_=0.5, to=2.0, resolution=0.05, orient="horizontal",
+            variable=speed_var, bg=self.BG_DARK, fg="#c9d1d9", troughcolor="#30363d",
+            highlightthickness=0, showvalue=False, length=200,
+            command=lambda v: spd_lbl.config(text=f"{float(v):.2f}"),
         )
-        txt_input.pack(side="left", fill="both", expand=True)
-        txt_scroll = tk.Scrollbar(txt_frame, command=txt_input.yview)
-        txt_scroll.pack(side="right", fill="y")
-        txt_input.config(yscrollcommand=txt_scroll.set)
+        spd_slider.pack(side="left", fill="x", expand=True)
 
-        generate_frame = tk.Frame(outer, bg=self.BG_DARK)
-        generate_frame.pack(fill="x", pady=(8, 0))
-        btn_generate = tk.Button(
-            generate_frame,
-            text="🎧 Genereaza audio XTTS-R",
-            bg=self.ACCENT_BLUE,
-            fg="#ffffff",
-            command=_on_generate_audio,
-            **btn_kw,
+        speed_sub = tk.Frame(rp, bg=self.BG_DARK)
+        speed_sub.pack(fill="x")
+        tk.Label(speed_sub, text="Mai lent", bg=self.BG_DARK, fg="#555e6b", font=("Segoe UI", 8)).pack(side="left")
+        tk.Label(speed_sub, text="Mai rapid", bg=self.BG_DARK, fg="#555e6b", font=("Segoe UI", 8)).pack(side="right")
+
+        # Temperature slider
+        _section_label("Variabilitate (Temperature)")
+        temp_row = tk.Frame(rp, bg=self.BG_DARK)
+        temp_row.pack(fill="x")
+        temp_lbl = tk.Label(temp_row, text="0.65", bg=self.BG_DARK, fg="#8b949e", font=("Segoe UI", 9), width=4)
+        temp_lbl.pack(side="right")
+        temp_slider = tk.Scale(
+            temp_row, from_=0.1, to=1.0, resolution=0.05, orient="horizontal",
+            variable=temperature_var, bg=self.BG_DARK, fg="#c9d1d9", troughcolor="#30363d",
+            highlightthickness=0, showvalue=False, length=200,
+            command=lambda v: temp_lbl.config(text=f"{float(v):.2f}"),
         )
-        btn_generate.pack(side="left")
-        lbl_generate_status = tk.Label(
-            generate_frame,
-            text="",
-            bg=self.BG_DARK,
-            fg="#8b949e",
-            font=("Segoe UI", 9),
+        temp_slider.pack(side="left", fill="x", expand=True)
+
+        temp_sub = tk.Frame(rp, bg=self.BG_DARK)
+        temp_sub.pack(fill="x")
+        tk.Label(temp_sub, text="Stabil", bg=self.BG_DARK, fg="#555e6b", font=("Segoe UI", 8)).pack(side="left")
+        tk.Label(temp_sub, text="Creativ", bg=self.BG_DARK, fg="#555e6b", font=("Segoe UI", 8)).pack(side="right")
+
+        # Top-P slider
+        _section_label("Diversitate (Top-P)")
+        topp_row = tk.Frame(rp, bg=self.BG_DARK)
+        topp_row.pack(fill="x")
+        topp_lbl = tk.Label(topp_row, text="0.85", bg=self.BG_DARK, fg="#8b949e", font=("Segoe UI", 9), width=4)
+        topp_lbl.pack(side="right")
+        topp_slider = tk.Scale(
+            topp_row, from_=0.1, to=1.0, resolution=0.05, orient="horizontal",
+            variable=top_p_var, bg=self.BG_DARK, fg="#c9d1d9", troughcolor="#30363d",
+            highlightthickness=0, showvalue=False, length=200,
+            command=lambda v: topp_lbl.config(text=f"{float(v):.2f}"),
         )
-        lbl_generate_status.pack(side="left", padx=(10, 0))
+        topp_slider.pack(side="left", fill="x", expand=True)
+
+        # Reset button
+        tk.Frame(rp, bg="#30363d", height=1).pack(fill="x", pady=(10, 4))
+        def _reset_sliders():
+            speed_var.set(1.0)
+            temperature_var.set(0.65)
+            top_p_var.set(0.85)
+            spd_lbl.config(text="1.00")
+            temp_lbl.config(text="0.65")
+            topp_lbl.config(text="0.85")
+
+        tk.Button(rp, text="↺ Reseteaza valorile", bg="#21262d", fg="#8b949e",
+                  command=_reset_sliders, font=("Segoe UI", 9), relief="flat",
+                  cursor="hand2").pack(anchor="e", pady=(0, 4))
+
+        def _on_generate_audio_with_sliders():
+            text = txt_input.get("1.0", "end-1c").strip()
+            if not text or text == _PLACEHOLDER:
+                messagebox.showwarning("Text lipsa", "Introdu textul pe care vrei sa il sintetizezi.")
+                return
+
+            out_path = filedialog.asksaveasfilename(
+                title="Salveaza audio XTTS",
+                defaultextension=".wav",
+                filetypes=[("WAV files", "*.wav"), ("All files", "*.*")],
+                initialfile="xtts_output.wav",
+            )
+            if not out_path:
+                return
+
+            mode = voice_mode_var.get()
+            cfg = _load_cfg()
+            if mode == "custom":
+                voices = _get_custom_voices()
+                selected_voice = custom_voice_var.get().strip()
+                if not selected_voice and lb_voices.curselection():
+                    selected_voice = lb_voices.get(lb_voices.curselection()[0]).split(" ✔")[0].strip()
+                if selected_voice not in voices:
+                    messagebox.showwarning("Voce lipsa", "Selecteaza o voce clonata valida sau cloneaza una noua.")
+                    return
+                cfg["voice_mode"] = "custom"
+                cfg["active_voice"] = selected_voice
+                cfg["speaker_ref_path"] = str(VOICES_DIR / f"{selected_voice}.wav")
+            else:
+                selected_builtin = builtin_voice_var.get().strip()
+                if not selected_builtin:
+                    messagebox.showwarning("Voce lipsa", "Selecteaza o voce XTTS normala.")
+                    return
+                cfg["voice_mode"] = "builtin"
+                cfg["builtin_speaker"] = selected_builtin
+            cfg["temperature"] = round(temperature_var.get(), 2)
+            cfg["top_p"] = round(top_p_var.get(), 2)
+            _save_cfg(cfg)
+
+            speed_val = round(speed_var.get(), 2)
+            btn_generate.config(state="disabled")
+            lbl_generate_status.config(text="⏳ Generez audio...")
+
+            def _worker():
+                result = None
+                err = None
+                err_detail = ""
+                try:
+                    from xtts_ro import generate_xtts_ro
+                    import traceback as _tb
+                    log_lines = []
+                    def _log(msg):
+                        log_lines.append(msg)
+                    result = generate_xtts_ro(text, output_path=out_path, config=cfg,
+                                              log=_log, speed=speed_val)
+                    if not result:
+                        err_detail = "\n".join(log_lines[-20:]) if log_lines else ""
+                except Exception as e:
+                    err = e
+                    import traceback as _tb
+                    err_detail = _tb.format_exc()
+
+                def _finish():
+                    btn_generate.config(state="normal")
+                    if result:
+                        lbl_generate_status.config(text=f"✅ Gata: {result}")
+                        messagebox.showinfo("Succes", f"Audio generat:\n{result}")
+                    else:
+                        lbl_generate_status.config(text="❌ Generare esuata.")
+                        detail = f"\n\nDetalii:\n{err_detail}" if err_detail else ""
+                        if err:
+                            messagebox.showerror("Eroare XTTS", f"Nu s-a putut genera audio:\n{err}{detail}")
+                        else:
+                            messagebox.showerror("Eroare XTTS", f"Nu s-a putut genera audio.{detail}")
+
+                self.root.after(0, _finish)
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        btn_generate.config(command=_on_generate_audio_with_sliders)
 
         _refresh_voice_list()
 
