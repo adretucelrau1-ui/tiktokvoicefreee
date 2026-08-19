@@ -268,9 +268,14 @@ def _load_xtts_model(model_path: str, device: str, log=None):
             return _original_torch_load(*args, **kwargs)
         _torch.load = _torch_load_no_weights_only
         try:
-            model = CoquiTTS("tts_models/multilingual/multi-dataset/xtts_v2").to(device)
+            _tts_wrapper = CoquiTTS("tts_models/multilingual/multi-dataset/xtts_v2")
         finally:
             _torch.load = _original_torch_load
+        # Unwrap the high-level TTS wrapper to the underlying Xtts model so
+        # that both load paths expose the same object with get_conditioning_latents
+        # and inference methods.
+        model = _tts_wrapper.synthesizer.tts_model
+        model.to(device)
 
     if log:
         log("[XTTS RO] Model loaded.")
@@ -498,9 +503,9 @@ def generate_xtts_ro(
                 audio_path=[speaker_ref]
             )
         else:
-            # Voice cloning conditioning is only used for custom voices.  For
-            # built-in speakers we rely on the model's own speaker bank via
-            # model.tts(..., speaker=builtin_speaker_name) below.
+            # For built-in speakers, resolve the speaker embedding from the
+            # model's own speaker bank and use the same low-level inference
+            # path as custom voices.
             gpt_cond_latent = None
             speaker_embedding = None
 
@@ -520,6 +525,22 @@ def generate_xtts_ro(
             elif not available_builtin:
                 if log:
                     log("[XTTS RO] ⚠ Model has no built-in speaker bank — synthesis may fail without a custom voice")
+
+            # Resolve speaker embeddings from the speaker bank so the same
+            # low-level inference path is used for built-in speakers too.
+            if builtin_speaker_name and available_builtin:
+                try:
+                    speaker_data = model.speaker_manager.speakers[builtin_speaker_name]
+                    gpt_cond_latent = speaker_data["gpt_cond_latent"]
+                    speaker_embedding = speaker_data["speaker_embedding"]
+                    import torch as _torch
+                    gpt_cond_latent = gpt_cond_latent.to(device)
+                    speaker_embedding = speaker_embedding.to(device)
+                    if log:
+                        log(f"[XTTS RO] Loaded built-in speaker embeddings for '{builtin_speaker_name}'")
+                except Exception as _e:
+                    if log:
+                        log(f"[XTTS RO] ⚠ Could not load built-in speaker embeddings: {_e}")
 
         # Split text into chunks
         chunks = _split_into_chunks(text, max_chars)
@@ -549,14 +570,10 @@ def generate_xtts_ro(
                         wav = wav.cpu().numpy()
                     wav = np.array(wav, dtype=np.float32).squeeze()
                 else:
-                    # Built-in studio speaker — the high-level API resolves the
-                    # speaker embedding internally from the model's speaker bank.
-                    # NOTE: XTTS v2 is multi-speaker and *requires* a `speaker`
-                    # (or `speaker_wav`) argument; builtin_speaker_name is always
-                    # set at this point (see resolution above) so this never
-                    # silently fails and falls back to the un-replaced voice.
-                    wav = model.tts(text=chunk, language=language, speaker=builtin_speaker_name)
-                    wav = np.array(wav, dtype=np.float32).squeeze()
+                    raise RuntimeError(
+                        "No speaker conditioning available (no speaker_ref and no built-in speaker bank). "
+                        "Provide a voice WAV file or ensure the model has a speaker bank."
+                    )
 
                 chunk_arrays.append(wav)
             except Exception as chunk_exc:
