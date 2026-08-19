@@ -7161,20 +7161,13 @@ class App:
         main_notebook.pack(fill="both", expand=True, padx=4, pady=4)
 
         tab_main = ttk.Frame(main_notebook)
-        tab_empty = ttk.Frame(main_notebook)
         try:
             tab_main.config(style='TFrame')
-            tab_empty.config(style='TFrame')
             tab_main.config(bg=self.BG_DARK)
-            tab_empty.config(bg=self.BG_DARK)
         except Exception:
             pass
 
         main_notebook.add(tab_main, text="🧩 Cliptic")
-        main_notebook.add(tab_empty, text="➕ Gol")
-
-        # Populate previously empty tab with XTTS playground controls
-        self._build_voice_clone_tab(tab_empty)
 
         pw = ttk.PanedWindow(tab_main, orient="horizontal")
         pw.pack(fill="both", expand=True)
@@ -12591,10 +12584,15 @@ class App:
                         messagebox.showinfo("Succes", f"Audio generat:\n{result}")
                     else:
                         lbl_generate_status.config(text="Generare esuata.")
-                        if err:
-                            messagebox.showerror("Eroare XTTS", f"Nu s-a putut genera audio:\n{err}")
-                        else:
-                            messagebox.showerror("Eroare XTTS", "Nu s-a putut genera audio.")
+                        import traceback as _tb
+                        err_msg = f"Nu s-a putut genera audio:\n{err}" if err else "Nu s-a putut genera audio."
+                        try:
+                            self.log_widget.config(state="normal")
+                            self.log_widget.insert(tk.END, f"\n[XTTS ERROR] {err_msg}\n")
+                            self.log_widget.config(state="disabled")
+                            self.log_widget.see(tk.END)
+                        except Exception:
+                            pass
 
                 self.root.after(0, _finish)
 
@@ -12895,10 +12893,14 @@ class App:
                     else:
                         lbl_generate_status.config(text="❌ Generare esuata.")
                         detail = f"\n\nDetalii:\n{err_detail}" if err_detail else ""
-                        if err:
-                            messagebox.showerror("Eroare XTTS", f"Nu s-a putut genera audio:\n{err}{detail}")
-                        else:
-                            messagebox.showerror("Eroare XTTS", f"Nu s-a putut genera audio.{detail}")
+                        err_msg = f"Nu s-a putut genera audio:\n{err}{detail}" if err else f"Nu s-a putut genera audio.{detail}"
+                        try:
+                            self.log_widget.config(state="normal")
+                            self.log_widget.insert(tk.END, f"\n[XTTS ERROR] {err_msg}\n")
+                            self.log_widget.config(state="disabled")
+                            self.log_widget.see(tk.END)
+                        except Exception:
+                            pass
 
                 self.root.after(0, _finish)
 
