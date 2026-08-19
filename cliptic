@@ -7157,8 +7157,27 @@ class App:
         except Exception:
             pass
 
-        pw = ttk.PanedWindow(root, orient="horizontal")
-        pw.pack(fill="both", expand=True, padx=4, pady=4)
+        main_notebook = ttk.Notebook(root)
+        main_notebook.pack(fill="both", expand=True, padx=4, pady=4)
+
+        tab_main = ttk.Frame(main_notebook)
+        tab_empty = ttk.Frame(main_notebook)
+        try:
+            tab_main.config(style='TFrame')
+            tab_empty.config(style='TFrame')
+            tab_main.config(bg=self.BG_DARK)
+            tab_empty.config(bg=self.BG_DARK)
+        except Exception:
+            pass
+
+        main_notebook.add(tab_main, text="🧩 Cliptic")
+        main_notebook.add(tab_empty, text="➕ Gol")
+
+        empty_label = ttk.Label(tab_empty, text="Acest tab este gol momentan.", style='SubHeader.TLabel')
+        empty_label.pack(anchor="nw", padx=16, pady=16)
+
+        pw = ttk.PanedWindow(tab_main, orient="horizontal")
+        pw.pack(fill="both", expand=True)
         try:
             pw.config(style='TPanedwindow')
             pw.config(bg=self.BG_DARK)
