@@ -8,6 +8,14 @@ Features:
   - Crossfade concatenation to avoid audible pauses
   - soundfile-based WAV output (avoids torchaudio/torchcodec pitfalls)
   - Configurable via xtts_ro_config.json (model path, speaker ref, tuning params)
+  - Auto-downloads the Romanian fine-tuned XTTS v2 model (eduardem/xtts-v2-romanian)
+    from HuggingFace on first use when model_path is not set in config.
+
+Model priority (first available wins):
+  1. model_path set in xtts_ro_config.json (explicit local directory)
+  2. models/xtts-v2-romanian/ — Romanian fine-tuned checkpoint, downloaded
+     automatically via huggingface_hub from eduardem/xtts-v2-romanian
+  3. Generic XTTS v2 (auto-downloaded by Coqui TTS API as last resort)
 
 Usage (standalone):
     python xtts_ro.py "Acesta este un test." --out test_out.wav
@@ -206,9 +214,117 @@ def _select_device(log=None):
 
 _xtts_model_cache = {}  # key: (model_path, device) → model instance
 
+# HuggingFace repo ID for the Romanian fine-tuned XTTS v2 checkpoint.
+# This model was fine-tuned specifically on Romanian speech and natively
+# supports 'ro' as a language, unlike the general XTTS v2 release.
+_HF_RO_REPO_ID = "eduardem/xtts-v2-romanian"
+_HF_RO_LOCAL_DIR = str(_THIS_DIR / "models" / "xtts-v2-romanian")
+
+
+def _ensure_romanian_model(log=None) -> str:
+    """
+    Ensure the Romanian fine-tuned XTTS v2 model is available locally.
+
+    Downloads from HuggingFace (eduardem/xtts-v2-romanian) on first use and
+    caches it in models/xtts-v2-romanian/ next to this script.
+
+    Returns the local directory path, or empty string if unavailable.
+    """
+    local_dir = Path(_HF_RO_LOCAL_DIR)
+    config_file = local_dir / "config.json"
+    model_file = local_dir / "model.pth"
+
+    if config_file.exists() and model_file.exists():
+        return str(local_dir)
+
+    if log:
+        log(f"[XTTS RO] Romanian fine-tuned model not found locally. Downloading from HuggingFace: {_HF_RO_REPO_ID}")
+        log(f"[XTTS RO] Download target: {local_dir}")
+        log("[XTTS RO] This is a one-time download (~1.8 GB). Please wait…")
+
+    try:
+        from huggingface_hub import snapshot_download
+    except ImportError:
+        if log:
+            log("[XTTS RO] ⚠ huggingface_hub not installed. Run: pip install huggingface_hub")
+            log("[XTTS RO] Falling back to generic XTTS v2 model (Romanian quality will be lower).")
+        return ""
+
+    try:
+        local_dir.mkdir(parents=True, exist_ok=True)
+        snapshot_download(
+            repo_id=_HF_RO_REPO_ID,
+            local_dir=str(local_dir),
+            ignore_patterns=["*.msgpack", "*.h5", "flax_model*", "tf_model*"],
+        )
+        if config_file.exists() and model_file.exists():
+            if log:
+                log(f"[XTTS RO] ✅ Romanian model downloaded successfully: {local_dir}")
+            return str(local_dir)
+        else:
+            if log:
+                log(f"[XTTS RO] ⚠ Download finished but expected files missing in {local_dir}")
+            return ""
+    except Exception as exc:
+        if log:
+            log(f"[XTTS RO] ⚠ Could not download Romanian model: {exc}")
+            log("[XTTS RO] Falling back to generic XTTS v2 model.")
+        return ""
+
+
+def _load_xtts_model_from_dir(model_path: str, device: str, log=None):
+    """Load an XTTS v2 model from a local directory checkpoint."""
+    config_file = os.path.join(model_path, "config.json")
+    if not os.path.exists(config_file):
+        raise FileNotFoundError(
+            f"[XTTS RO] config.json not found in model_path: {model_path}"
+        )
+    from TTS.tts.configs.xtts_config import XttsConfig
+    from TTS.tts.models.xtts import Xtts
+    xtts_config = XttsConfig()
+    xtts_config.load_json(config_file)
+    model = Xtts.init_from_config(xtts_config)
+    checkpoint_path = os.path.join(model_path, "model.pth")
+    vocab_path = os.path.join(model_path, "vocab.json")
+    speakers_path = (
+        os.path.join(model_path, "speakers_xtts.pth")
+        if os.path.exists(os.path.join(model_path, "speakers_xtts.pth"))
+        else None
+    )
+    import torch as _torch
+    _orig = _torch.load
+    def _no_weights_only(*args, **kwargs):
+        kwargs["weights_only"] = False
+        return _orig(*args, **kwargs)
+    _torch.load = _no_weights_only
+    try:
+        model.load_checkpoint(
+            xtts_config,
+            checkpoint_path=checkpoint_path,
+            vocab_path=vocab_path,
+            speaker_file_path=speakers_path,
+            eval=True,
+        )
+    finally:
+        _torch.load = _orig
+    model.to(device)
+    return model
+
 
 def _load_xtts_model(model_path: str, device: str, log=None):
-    """Load (and cache) the XTTS v2 model."""
+    """
+    Load (and cache) the XTTS v2 model.
+
+    Priority:
+      1. model_path from config (explicit local directory)
+      2. Romanian fine-tuned model (eduardem/xtts-v2-romanian from HuggingFace)
+         — downloaded automatically on first use to models/xtts-v2-romanian/
+      3. Generic XTTS v2 (auto-downloaded by Coqui TTS API as last resort)
+    """
+    # Normalise model_path: make absolute relative to script dir if relative
+    if model_path and not os.path.isabs(model_path):
+        model_path = str(_THIS_DIR / model_path)
+
     cache_key = (model_path, device)
     if cache_key in _xtts_model_cache:
         return _xtts_model_cache[cache_key]
@@ -221,64 +337,50 @@ def _load_xtts_model(model_path: str, device: str, log=None):
             "Install with: pip install TTS"
         )
 
-    if log:
-        log("[XTTS RO] Loading XTTS v2 model…")
-
+    # --- Path 1: explicit local model_path ---
     if model_path and os.path.isdir(model_path):
-        # Load from local checkpoint directory
-        config_file = os.path.join(model_path, "config.json")
-        if not os.path.exists(config_file):
-            raise FileNotFoundError(
-                f"[XTTS RO] config.json not found in model_path: {model_path}"
-            )
-        from TTS.tts.configs.xtts_config import XttsConfig
-        from TTS.tts.models.xtts import Xtts
-        xtts_config = XttsConfig()
-        xtts_config.load_json(config_file)
-        model = Xtts.init_from_config(xtts_config)
-        checkpoint_path = os.path.join(model_path, "model.pth")
-        vocab_path = os.path.join(model_path, "vocab.json")
-        speakers_path = (
-            os.path.join(model_path, "speakers_xtts.pth")
-            if os.path.exists(os.path.join(model_path, "speakers_xtts.pth"))
-            else None
-        )
-        model.load_checkpoint(
-            xtts_config,
-            checkpoint_path=checkpoint_path,
-            vocab_path=vocab_path,
-            speaker_file_path=speakers_path,
-            eval=True,
-        )
-        import torch
-        model.to(device)
-    else:
-        # Auto-download the official XTTS v2 model via the TTS API.
-        # NOTE: TTS.api.TTS's `gpu=` constructor kwarg is deprecated in favor of
-        # explicitly moving the model with `.to(device)`, which is what we do here.
-        #
-        # PyTorch ≥ 2.6 changed the default of `weights_only` from False to True.
-        # The TTS library checkpoint contains custom classes (e.g. XttsConfig) that
-        # are not whitelisted under weights_only=True, so we temporarily patch
-        # torch.load to force weights_only=False while the model loads.
-        import torch as _torch
-        _original_torch_load = _torch.load
-        def _torch_load_no_weights_only(*args, **kwargs):
-            kwargs["weights_only"] = False
-            return _original_torch_load(*args, **kwargs)
-        _torch.load = _torch_load_no_weights_only
-        try:
-            _tts_wrapper = CoquiTTS("tts_models/multilingual/multi-dataset/xtts_v2")
-        finally:
-            _torch.load = _original_torch_load
-        # Unwrap the high-level TTS wrapper to the underlying Xtts model so
-        # that both load paths expose the same object with get_conditioning_latents
-        # and inference methods.
-        model = _tts_wrapper.synthesizer.tts_model
-        model.to(device)
+        if log:
+            log(f"[XTTS RO] Loading model from: {model_path}")
+        model = _load_xtts_model_from_dir(model_path, device, log=log)
+        if log:
+            log("[XTTS RO] Model loaded.")
+        _xtts_model_cache[cache_key] = model
+        return model
+
+    # --- Path 2: Romanian fine-tuned model (HuggingFace auto-download) ---
+    ro_model_dir = _ensure_romanian_model(log=log)
+    if ro_model_dir:
+        if log:
+            log(f"[XTTS RO] Loading Romanian fine-tuned model from: {ro_model_dir}")
+        model = _load_xtts_model_from_dir(ro_model_dir, device, log=log)
+        if log:
+            log("[XTTS RO] Romanian model loaded. Native 'ro' language support active.")
+        # Cache under both the explicit empty key and the resolved path
+        _xtts_model_cache[cache_key] = model
+        _xtts_model_cache[(ro_model_dir, device)] = model
+        return model
+
+    # --- Path 3: Generic XTTS v2 (fallback) ---
+    if log:
+        log("[XTTS RO] Loading generic XTTS v2 model (Romanian fine-tuned model unavailable)…")
+    import torch as _torch
+    _original_torch_load = _torch.load
+    def _torch_load_no_weights_only(*args, **kwargs):
+        kwargs["weights_only"] = False
+        return _original_torch_load(*args, **kwargs)
+    _torch.load = _torch_load_no_weights_only
+    try:
+        _tts_wrapper = CoquiTTS("tts_models/multilingual/multi-dataset/xtts_v2")
+    finally:
+        _torch.load = _original_torch_load
+    # Unwrap the high-level TTS wrapper to the underlying Xtts model so
+    # that both load paths expose the same object with get_conditioning_latents
+    # and inference methods.
+    model = _tts_wrapper.synthesizer.tts_model
+    model.to(device)
 
     if log:
-        log("[XTTS RO] Model loaded.")
+        log("[XTTS RO] Generic XTTS v2 model loaded.")
     _xtts_model_cache[cache_key] = model
     return model
 

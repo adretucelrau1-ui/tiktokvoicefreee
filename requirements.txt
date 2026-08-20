@@ -6,3 +6,4 @@ torchaudio
 soundfile
 scipy
 openai-whisper
+huggingface_hub
