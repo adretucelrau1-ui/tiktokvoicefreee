@@ -111,7 +111,7 @@ import gc
 
 import tkinter as tk
 import tkinter.font as tkfont
-from tkinter import ttk, filedialog, messagebox
+from tkinter import ttk, filedialog, messagebox, simpledialog
 from tkinter.scrolledtext import ScrolledText
 from pathlib import Path
 
@@ -2033,22 +2033,56 @@ def _get_genaipro_api_key():
         pass
     return None
 
-def generate_tts_audio(text, language='en', output_path=None, log=None):
+def generate_tts_audio(text, language='en', output_path=None, log=None, use_xtts_ro=None):
     """
-    Generate Text-to-Speech audio using GenAI Pro exclusively.
-    
+    Generate Text-to-Speech audio.
+
+    When USE_XTTS_RO is True (or language == 'ro' and XTTS RO is available),
+    the local Romanian XTTS pipeline is used.  Otherwise, GenAI Pro is used.
+
     Args:
         text: Text to convert to speech
         language: Language code for TTS
         output_path: Path to save audio file (temp file if None)
         log: Optional logging function
-    
+        use_xtts_ro: Force XTTS RO usage for this call (None = use global setting)
+
     Returns:
         Path to generated audio file or None if failed
     """
     if not text or not text.strip():
         return None
-    
+
+    # --- XTTS RO path ---
+    if use_xtts_ro is None:
+        use_xtts_ro = globals().get('USE_XTTS_RO', False)
+    if use_xtts_ro:
+        if log:
+            log("=" * 60)
+            log("[TTS] 🎙️  STARTING XTTS RO VOICE GENERATION")
+            log(f"[TTS] Text length: {len(text)} characters")
+            log(f"[TTS] Language: {language}")
+            log("=" * 60)
+        try:
+            from xtts_ro import generate_xtts_ro
+            tts_speed = globals().get('TTS_SPEED', 1.0)
+            result = generate_xtts_ro(text, output_path=output_path, log=log, speed=tts_speed)
+        except Exception as xtts_exc:
+            if log:
+                log(f"[TTS] ❌ XTTS RO failed: {xtts_exc}")
+            result = None
+        if result:
+            if log:
+                log("=" * 60)
+                log("[TTS] ✅ XTTS RO GENERATION COMPLETE!")
+                log(f"[TTS] Audio file ready: {result}")
+                log("=" * 60)
+            return result
+        if log:
+            log("[TTS] ❌ XTTS RO generation failed.")
+        return None
+
+    # --- GenAI Pro path (default) ---
     api_key = _get_genaipro_api_key()
     if not api_key:
         if log:
@@ -2104,7 +2138,7 @@ def generate_tts_audio(text, language='en', output_path=None, log=None):
         log("[TTS] ❌ GenAI Pro TTS failed. No voice generated.")
     return None
 
-def replace_voice_with_tts(caption_segments, language='en', log=None):
+def replace_voice_with_tts(caption_segments, language='en', log=None, use_xtts_ro=None):
     """
     Generate AI voice audio from caption segments.
     
@@ -2112,12 +2146,15 @@ def replace_voice_with_tts(caption_segments, language='en', log=None):
         caption_segments: List of caption segments with translated text
         language: Language code for TTS
         log: Optional logging function
+        use_xtts_ro: Force XTTS RO usage for this call (None = use global setting)
     
     Returns:
         Path to generated audio file or None if failed
     """
-    # Check if GenAI Pro TTS is available
-    if not _get_genaipro_api_key():
+    # Allow XTTS RO to bypass GenAI Pro API key requirement
+    if use_xtts_ro is None:
+        use_xtts_ro = globals().get('USE_XTTS_RO', False)
+    if not use_xtts_ro and not _get_genaipro_api_key():
         if log:
             log("[TTS] ⚠️  No GenAI Pro API key found in tts_config.json")
         return None
@@ -2137,7 +2174,7 @@ def replace_voice_with_tts(caption_segments, language='en', log=None):
         full_text = " ".join([seg.get("text", "") for seg in caption_segments])
         
         # Generate TTS audio
-        output_path = generate_tts_audio(full_text, language=language, log=log)
+        output_path = generate_tts_audio(full_text, language=language, log=log, use_xtts_ro=use_xtts_ro)
         
         if output_path and log:
             log(f"[TTS] Voice replacement complete: {output_path}")
@@ -2296,6 +2333,7 @@ VIDEO_ZOOM_SCALE = 1.0  # 1.0 = auto-fit, <1.0 = zoom out, >1.0 = zoom in
 TRANSLATION_ENABLED = False
 TARGET_LANGUAGE = 'none'  # 'none', 'en', 'es', 'fr', 'ro', etc.
 USE_AI_VOICE_REPLACEMENT = False
+USE_XTTS_RO = False  # When True, use local Romanian XTTS instead of GenAI Pro
 TTS_LANGUAGE = 'en'
 TTS_VOICE_ID = 'auto'  # 'auto' or specific voice ID
 TTS_FALLBACK_VOICE_ID = 'auto'  # Backup voice ID used when primary voice fails (policy violation, crash, etc.)
@@ -2992,9 +3030,40 @@ def _find_and_remove_corrupted_whisper_models(model_name, log=None):
                         if log: log(f"[whisper-cleanup] failed to remove {full}: {e}")
     return removed
 
+def _ensure_whisper_deps(log=None):
+    """Import 'torch' and 'whisper', auto-installing them via pip if missing.
+
+    This mirrors the app's self-healing approach for other recoverable Whisper
+    errors (corrupted downloads, CUDA mismatches): instead of just telling the
+    user to run 'pip install openai-whisper torch' and aborting the job, try
+    doing it automatically first, then retry the import.
+    """
+    try:
+        import torch
+        import whisper
+        return whisper, torch
+    except (ModuleNotFoundError, ImportError) as e_import:
+        if log:
+            log(f"[whisper] Modulul necesar lipsește ({e_import}). "
+                f"Se încearcă instalarea automată (pip install openai-whisper torch)...")
+        try:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "--quiet", "openai-whisper", "torch"])
+        except Exception as e_install:
+            if log: log(f"[whisper] Instalarea automată a eșuat: {e_install}")
+            raise e_import
+        import importlib
+        importlib.invalidate_caches()
+        try:
+            import torch
+            import whisper
+        except (ModuleNotFoundError, ImportError) as e_retry:
+            if log: log(f"[whisper] Modulul tot lipsește după instalarea automată: {e_retry}")
+            raise e_import
+        if log: log("[whisper] Instalare automată reușită ('openai-whisper' și 'torch').")
+        return whisper, torch
+
 def _load_whisper_model_with_retries(model_name="large-v3", tries=3, log=None):
-    import torch    # lazy import — heavy module, only loaded when transcription is needed
-    import whisper  # lazy import — heavy module, only loaded when transcription is needed
+    whisper, torch = _ensure_whisper_deps(log=log)  # lazy import — heavy modules, only loaded when transcription is needed
     last_exc = None
     
     # Detect GPU availability for Whisper with improved detection
@@ -3121,11 +3190,26 @@ def transcribe_captions(voice_path, log=None, translate_to=None):
         # Medium/small models are faster but timestamps not accurate enough, causing caption-voice mismatch
         try:
             model, device = _get_cached_whisper_model("large", tries=3, log=log_fn)
+        except (ModuleNotFoundError, ImportError) as e_import:
+            # Missing dependency (e.g. 'openai-whisper'/'torch' not installed). Retrying with
+            # another model size won't help, and blaming internet/disk space here would be
+            # misleading — tell the user exactly what to install instead.
+            log_fn(f"[whisper] Modulul necesar lipsește: {e_import}")
+            raise RuntimeError(
+                "Modulul 'whisper' (sau 'torch') nu este instalat. "
+                "Rulează: pip install openai-whisper torch"
+            ) from e_import
         except Exception as e_large:
             log_fn(f"[whisper] Failed to load 'large' model after retries: {e_large}")
             log_fn("[whisper] Falling back to 'medium' model (faster but less accurate timestamps).")
             try:
                 model, device = _get_cached_whisper_model("medium", tries=2, log=log_fn)
+            except (ModuleNotFoundError, ImportError) as e_import:
+                log_fn(f"[whisper] Modulul necesar lipsește: {e_import}")
+                raise RuntimeError(
+                    "Modulul 'whisper' (sau 'torch') nu este instalat. "
+                    "Rulează: pip install openai-whisper torch"
+                ) from e_import
             except Exception as e_medium:
                 log_fn(f"[whisper] Failed to load 'medium' model as well: {e_medium}")
                 raise RuntimeError("Whisper models unavailable. Verifică conexiunea la internet și spațiul pe disc.") from e_medium
@@ -5455,7 +5539,7 @@ def make_music_match_duration(music_clip, target_duration, log, music_gain=None)
         trimmed = trimmed.fx(audio_fadeout, MUSIC_FADEOUT_SECONDS)
         return trimmed.volumex(music_gain).set_duration(target_duration)
 
-def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None, target_language=None, translation_enabled=None, tts_language=None, silence_threshold_ms=300, caption_text_color=None, caption_stroke_color=None, caption_stroke_width=None, caption_font_size=None, caption_y_offset=None, pre_generated_voice=None, voice_gain=None, music_gain=None):
+def process_single_job(video_path, voice_path, music_path, requested_output_path, q, preferred_font=None, custom_top_ratio=None, custom_bottom_ratio=None, mirror_video=False, words_per_caption=2, use_4k=False, blur_radius=None, bg_scale_extra=None, dim_factor=None, effect_settings=None, use_ai_voice=None, use_xtts_ro=None, target_language=None, translation_enabled=None, tts_language=None, silence_threshold_ms=300, caption_text_color=None, caption_stroke_color=None, caption_stroke_width=None, caption_font_size=None, caption_y_offset=None, pre_generated_voice=None, voice_gain=None, music_gain=None):
     def log(s):
         q.put(str(s))
     def _check_stop():
@@ -5490,6 +5574,8 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
     # Determine if AI voice should be used - prefer parameter over global
     if use_ai_voice is None:
         use_ai_voice = globals().get('USE_AI_VOICE_REPLACEMENT', False)
+    if use_xtts_ro is None:
+        use_xtts_ro = globals().get('USE_XTTS_RO', False)
     
     # Determine language settings - prefer parameters over globals
     if target_language is None:
@@ -5831,7 +5917,8 @@ def process_single_job(video_path, voice_path, music_path, requested_output_path
                     tts_audio_path = replace_voice_with_tts(
                         caption_segments, 
                         language=tts_language,
-                        log=log
+                        log=log,
+                        use_xtts_ro=use_xtts_ro
                     )
                     if tts_audio_path:
                         # Replace voice_clip with TTS audio
@@ -6105,6 +6192,7 @@ def _prepare_voice_for_job(job, job_index, total_jobs, q):
     target_language = job.get("target_language", 'none')
     translation_enabled = job.get("translation_enabled", False)
     tts_language = job.get("tts_language", 'en')
+    use_xtts_ro = bool(job.get("use_xtts_ro", globals().get('USE_XTTS_RO', False)))
     silence_threshold_ms = job.get("silence_threshold_ms", 300)
     
     # Auto-sync TTS language with translation target language
@@ -6156,7 +6244,8 @@ def _prepare_voice_for_job(job, job_index, total_jobs, q):
         tts_audio_path = replace_voice_with_tts(
             caption_segments,
             language=tts_language,
-            log=log
+            log=log,
+            use_xtts_ro=job.get("use_xtts_ro", globals().get('USE_XTTS_RO', False))
         )
         
         if not tts_audio_path:
@@ -6337,6 +6426,29 @@ def _submit_voice_for_job(job, job_index, total_jobs, q, release_whisper=True):
         # Step 3: Submit TTS (non-blocking for GenAI Pro)
         full_text = " ".join([seg.get("text", "") for seg in caption_segments])
 
+        # Step 3a: Local XTTS RO path (voice-clone / built-in XTTS speakers)
+        if use_xtts_ro:
+            log(f"[VOICE SUBMIT {job_index}/{total_jobs}] 🎙️ XTTS RO enabled — generating local TTS now...")
+            tts_audio_path = replace_voice_with_tts(
+                caption_segments,
+                language=tts_language,
+                log=log,
+                use_xtts_ro=True
+            )
+            if tts_audio_path:
+                log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ✅ XTTS RO audio ready")
+                return {
+                    'needs_polling': False,
+                    'tts_audio_path': tts_audio_path,
+                    'caption_segments': caption_segments,
+                    'tts_language': tts_language,
+                    'silence_threshold_ms': silence_threshold_ms,
+                    'full_text': full_text,
+                }
+            log(f"[VOICE SUBMIT {job_index}/{total_jobs}] ❌ XTTS RO generation failed")
+            return None
+
+        # Step 3b: GenAI Pro path
         # Try GenAI Pro API key
         api_key = _get_genaipro_api_key()
 
@@ -6597,6 +6709,7 @@ def _run_video_job(job, job_index, total_jobs, q, pre_generated_voice=None):
                        dim_factor=job.get("dim_factor"),
                        effect_settings=effect_settings,
                        use_ai_voice=job.get("use_ai_voice", False),
+                       use_xtts_ro=job.get("use_xtts_ro", globals().get('USE_XTTS_RO', False)),
                        target_language=job.get("target_language", 'none'),
                        translation_enabled=job.get("translation_enabled", False),
                        tts_language=job.get("tts_language", 'en'),
@@ -6619,6 +6732,7 @@ def queue_worker(jobs, q):
     
     # Check if any jobs use AI voice — if so, use non-blocking voice pipeline
     any_ai_voice = any(job.get("use_ai_voice", False) for job in jobs)
+    any_xtts_ro_ai = any(job.get("use_ai_voice", False) and job.get("use_xtts_ro", False) for job in jobs)
     
     if not any_ai_voice or len(jobs) <= 1:
         # No AI voice jobs or single job — use simple sequential processing
@@ -6643,7 +6757,7 @@ def queue_worker(jobs, q):
     log("━"*60)
     log("[QUEUE] 🚀 INTERLEAVED NON-BLOCKING VOICE PIPELINE")
     log(f"[QUEUE] {total} jobs — submitting voices & processing videos concurrently")
-    concurrency_preview = max(1, globals().get('VOICE_SUBMISSION_CONCURRENCY', 3))
+    concurrency_preview = 1 if any_xtts_ro_ai else max(1, globals().get('VOICE_SUBMISSION_CONCURRENCY', 3))
     log(f"[QUEUE] Concurrent voice submissions: {concurrency_preview} | Completions: parallel")
     log("━"*60)
     log("")
@@ -6672,7 +6786,7 @@ def queue_worker(jobs, q):
     # Up to VOICE_SUBMISSION_CONCURRENCY jobs are submitted to GenAI Pro at
     # the same time.  Whisper transcription still serialises internally (GPU
     # is not thread-safe), but audio extraction and TTS API POSTs overlap.
-    concurrency = max(1, globals().get('VOICE_SUBMISSION_CONCURRENCY', 3))
+    concurrency = 1 if any_xtts_ro_ai else max(1, globals().get('VOICE_SUBMISSION_CONCURRENCY', 3))
     _submit_sem = threading.Semaphore(concurrency)
     # Counts how many submitter threads are still running (used to know when
     # the Whisper model can be released).
@@ -6680,6 +6794,8 @@ def queue_worker(jobs, q):
     _active_submitters = [0]        # mutable int inside a list for closure
 
     log(f"[QUEUE] ⚡ Concurrent voice submissions: {concurrency} at a time")
+    if any_xtts_ro_ai:
+        log("[QUEUE] ℹ XTTS RO detected in queue — limiting voice submissions to 1 for stability")
 
     def _submit_one(idx):
         """Thread: submit one voice job (bounded by _submit_sem semaphore)."""
@@ -6834,7 +6950,7 @@ class App:
 
     def __init__(self, root):
         self.root = root
-        root.title("TikTok Auto Studio")
+        root.title("Cliptic")
         # --- Lock system for scroll protection ---
         self._lock_vars = {}           # {lock_key: BooleanVar}
         self._lock_labels = {}         # {lock_key: label widget}
@@ -6918,6 +7034,15 @@ class App:
                           borderwidth=1, relief='groove')
             style.configure('TLabelframe.Label', background=self.BG_DARK, foreground=self.ACCENT_BLUE,
                           font=('Segoe UI', 10, 'bold'))
+
+            # --- TNotebook: dark tabs for the left panel (Video / Voice Cloning) ---
+            style.configure('TNotebook', background=self.BG_DARK, borderwidth=0)
+            style.configure('TNotebook.Tab', background=self.BG_ELEVATED, foreground=self.TEXT_SECONDARY,
+                          padding=(12, 6), font=('Segoe UI', 9, 'bold'), borderwidth=1)
+            style.map('TNotebook.Tab',
+                      background=[('selected', self.BG_SECONDARY), ('active', self.HOVER_BG)],
+                      foreground=[('selected', self.TEXT_PRIMARY)],
+                      bordercolor=[('selected', self.ACCENT_BLUE)])
 
             # --- Accent button styles (with border) ---
             style.configure('Accent.TButton', background=self.ACCENT_BLUE, foreground='#ffffff',
@@ -7068,8 +7193,20 @@ class App:
         except Exception:
             pass
 
-        pw = ttk.PanedWindow(root, orient="horizontal")
-        pw.pack(fill="both", expand=True, padx=4, pady=4)
+        main_notebook = ttk.Notebook(root)
+        main_notebook.pack(fill="both", expand=True, padx=4, pady=4)
+
+        tab_main = ttk.Frame(main_notebook)
+        try:
+            tab_main.config(style='TFrame')
+            tab_main.config(bg=self.BG_DARK)
+        except Exception:
+            pass
+
+        main_notebook.add(tab_main, text="🧩 Cliptic")
+
+        pw = ttk.PanedWindow(tab_main, orient="horizontal")
+        pw.pack(fill="both", expand=True)
         try:
             pw.config(style='TPanedwindow')
             pw.config(bg=self.BG_DARK)
@@ -7083,11 +7220,31 @@ class App:
             left_container.config(bg=self.BG_DARK)
         except Exception:
             pass
-        
+
+        # Left side is split into two tabs: the main video-generation controls
+        # and a separate "Voice Cloning" tab where custom voices for XTTS can
+        # be cloned/managed independently of running a video job.
+        left_notebook = ttk.Notebook(left_container)
+        left_notebook.pack(fill="both", expand=True)
+
+        tab_video = ttk.Frame(left_notebook)
+        try:
+            tab_video.config(style='TFrame')
+        except Exception:
+            pass
+        left_notebook.add(tab_video, text="🎬 Generare Video")
+
+        tab_voice_clone = ttk.Frame(left_notebook)
+        try:
+            tab_voice_clone.config(style='TFrame')
+        except Exception:
+            pass
+        left_notebook.add(tab_voice_clone, text="🎙️ Clonare Voci")
+
         # Create Canvas and Scrollbar for scrollable left panel
-        left_canvas = tk.Canvas(left_container, bg=self.BG_DARK, highlightthickness=0)
+        left_canvas = tk.Canvas(tab_video, bg=self.BG_DARK, highlightthickness=0)
         self._left_canvas = left_canvas
-        left_scrollbar = ttk.Scrollbar(left_container, orient="vertical", command=left_canvas.yview)
+        left_scrollbar = ttk.Scrollbar(tab_video, orient="vertical", command=left_canvas.yview)
         
         # Create the actual frame that will contain all controls
         left_frame = ttk.Frame(left_canvas, padding=10)
@@ -7130,6 +7287,9 @@ class App:
         
         left_canvas.bind('<Enter>', bind_mousewheel)
         left_canvas.bind('<Leave>', unbind_mousewheel)
+
+        # Build the "Clonare Voci" tab content (independent voice-cloning UI)
+        self._build_voice_clone_tab(tab_voice_clone)
         
         pw.add(left_container, weight=1)
 
@@ -7324,9 +7484,13 @@ class App:
         prompt_hint.grid(row=row, column=1, columnspan=2, sticky='w', padx=(6,0))
         row += 1
 
-        self.use_ai_voice_var = tk.BooleanVar(value=USE_AI_VOICE_REPLACEMENT)
-        ttk.Checkbutton(left_frame, text="Replace voice with AI (TTS)", variable=self.use_ai_voice_var,
-                       command=self.on_ai_voice_toggle).grid(row=row, column=0, columnspan=3, sticky="w")
+        # use_ai_voice_var kept as hidden variable (AI TTS UI removed, XTTS is the only engine)
+        self.use_ai_voice_var = tk.BooleanVar(value=False)
+
+        # XTTS RO mode checkbox — replaces GenAI Pro with local Romanian XTTS
+        self.use_xtts_ro_var = tk.BooleanVar(value=USE_XTTS_RO)
+        ttk.Checkbutton(left_frame, text="xtts ro voice", variable=self.use_xtts_ro_var,
+                       command=self.on_xtts_ro_toggle).grid(row=row, column=0, columnspan=3, sticky="w")
         row += 1
 
         _lbl_tts_lang = ttk.Label(left_frame, text="TTS language:")
@@ -7393,57 +7557,6 @@ class App:
         self._register_lockable("tts_fallback_voice", _lbl_fallback_voice, self.tts_fallback_voice_combo, is_combo_readonly=True)
         row += 1
 
-        # API Key input for premium TTS services
-        ttk.Label(left_frame, text="TTS API Key:").grid(row=row, column=0, sticky="e")
-        
-        # Load saved API key
-        saved_api_key = ""
-        try:
-            config_path = os.path.join(os.path.dirname(__file__), "tts_config.json")
-            if os.path.exists(config_path):
-                with open(config_path, 'r') as f:
-                    config = json.load(f)
-                    saved_api_key = config.get("api_key", "")
-        except Exception:
-            pass
-        
-        self.tts_api_key_var = tk.StringVar(value=saved_api_key)
-        self.tts_api_key_entry = ttk.Entry(left_frame, textvariable=self.tts_api_key_var, show="*", width=30)
-        self.tts_api_key_entry.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
-        row += 1
-        
-        # Button to save API key
-        ttk.Button(left_frame, text="Save API Key", style='Accent.TButton', command=self.on_save_api_key).grid(row=row, column=1, sticky="w", padx=(6,0))
-        row += 1
-        
-        # Custom Voice Management Section
-        ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
-        row += 1
-        
-        ttk.Label(left_frame, text="Custom Voice ID:").grid(row=row, column=0, sticky="e")
-        self.custom_voice_id_var = tk.StringVar()
-        self.custom_voice_id_entry = ttk.Entry(left_frame, textvariable=self.custom_voice_id_var, width=30)
-        self.custom_voice_id_entry.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
-        row += 1
-        
-        ttk.Label(left_frame, text="Voice Name:").grid(row=row, column=0, sticky="e")
-        self.custom_voice_name_var = tk.StringVar()
-        self.custom_voice_name_entry = ttk.Entry(left_frame, textvariable=self.custom_voice_name_var, width=30)
-        self.custom_voice_name_entry.grid(row=row, column=1, columnspan=2, sticky="we", padx=(6,0))
-        row += 1
-        
-        _lbl_voice_lang = ttk.Label(left_frame, text="Language Category:")
-        _lbl_voice_lang.grid(row=row, column=0, sticky="e")
-        self.custom_voice_lang_var = tk.StringVar(value="en")
-        lang_options = ["en", "es", "fr", "de", "it", "pt", "ro", "ru", "zh", "ja", "ko", "ar"]
-        self.custom_voice_lang_combo = ttk.Combobox(left_frame, textvariable=self.custom_voice_lang_var, values=lang_options, state="readonly", width=10)
-        self.custom_voice_lang_combo.grid(row=row, column=1, sticky="w", padx=(6,0))
-        self._register_lockable("custom_voice_lang", _lbl_voice_lang, self.custom_voice_lang_combo, is_combo_readonly=True)
-        row += 1
-        
-        ttk.Button(left_frame, text="Save Custom Voice", style='Accent.TButton', command=self.on_save_custom_voice).grid(row=row, column=1, sticky="w", padx=(6,0))
-        row += 1
-        
         # Silence Removal Threshold Section
         ttk.Separator(left_frame).grid(row=row, column=0, columnspan=3, sticky="we", pady=6)
         row += 1
@@ -8953,16 +9066,38 @@ class App:
             enabled = self.use_ai_voice_var.get()
             globals()['USE_AI_VOICE_REPLACEMENT'] = enabled
             if enabled:
-                if not _get_genaipro_api_key():
+                use_xtts_ro = globals().get('USE_XTTS_RO', False)
+                if not use_xtts_ro and not _get_genaipro_api_key():
                     messagebox.showwarning(
                         "No TTS Engine Available",
                         "GenAI Pro API key not found.\n"
-                        "Please configure tts_config.json with a valid API key."
+                        "Please configure tts_config.json with a valid API key,\n"
+                        "or enable 'xtts ro voice' to use the local XTTS engine."
                     )
                     self.use_ai_voice_var.set(False)
                     globals()['USE_AI_VOICE_REPLACEMENT'] = False
         except Exception as e:
             print(f"AI voice toggle error: {e}")
+
+    def on_xtts_ro_toggle(self):
+        """Callback when 'xtts ro voice' checkbox is toggled."""
+        try:
+            enabled = self.use_xtts_ro_var.get()
+            globals()['USE_XTTS_RO'] = enabled
+            if enabled:
+                # Auto-enable AI voice replacement so the pipeline runs
+                if hasattr(self, 'use_ai_voice_var') and not self.use_ai_voice_var.get():
+                    self.use_ai_voice_var.set(True)
+                    globals()['USE_AI_VOICE_REPLACEMENT'] = True
+                if hasattr(self, 'log_to_console'):
+                    self.log_to_console(
+                        "[XTTS RO] Local Romanian XTTS engine enabled. "
+                        "Configure model/speaker paths in xtts_ro_config.json."
+                    )
+            else:
+                globals()['USE_XTTS_RO'] = False
+        except Exception as e:
+            print(f"XTTS RO toggle error: {e}")
     
     def on_tts_language_selected(self, event=None):
         """Callback when TTS language is selected"""
@@ -10148,6 +10283,7 @@ class App:
                 "dim_factor": globals().get('DIM_FACTOR', 1.0),
                 # AI and caption settings
                 "use_ai_voice": self.use_ai_voice_var.get(),
+                "use_xtts_ro": self.use_xtts_ro_var.get() if hasattr(self, "use_xtts_ro_var") else USE_XTTS_RO,
                 "translation_enabled": self.translation_enabled_var.get(),
                 "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
                 "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
@@ -10226,6 +10362,7 @@ class App:
                 "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
                 "dim_factor": globals().get('DIM_FACTOR', 1.0),
                 "use_ai_voice": self.use_ai_voice_var.get(),
+                "use_xtts_ro": self.use_xtts_ro_var.get() if hasattr(self, "use_xtts_ro_var") else USE_XTTS_RO,
                 "translation_enabled": self.translation_enabled_var.get(),
                 "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
                 "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
@@ -10339,6 +10476,9 @@ class App:
             
             # Load AI and translation settings
             self.use_ai_voice_var.set(job.get("use_ai_voice", False))
+            if hasattr(self, 'use_xtts_ro_var'):
+                self.use_xtts_ro_var.set(job.get("use_xtts_ro", False))
+                globals()['USE_XTTS_RO'] = job.get("use_xtts_ro", False)
             self.translation_enabled_var.set(job.get("translation_enabled", False))
             if hasattr(self, 'target_language_var'):
                 self.target_language_var.set(job.get("target_language", "none"))
@@ -10528,6 +10668,7 @@ class App:
                 "bg_scale_extra": globals().get('BG_SCALE_EXTRA', 1.08),
                 "dim_factor": globals().get('DIM_FACTOR', 1.0),
                 "use_ai_voice": self.use_ai_voice_var.get(),
+                "use_xtts_ro": self.use_xtts_ro_var.get() if hasattr(self, "use_xtts_ro_var") else USE_XTTS_RO,
                 "translation_enabled": self.translation_enabled_var.get(),
                 "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
                 "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
@@ -10855,6 +10996,7 @@ class App:
                    "dim_factor": globals().get('DIM_FACTOR', 1.0),
                    # AI and caption settings
                    "use_ai_voice": self.use_ai_voice_var.get(),
+                "use_xtts_ro": self.use_xtts_ro_var.get() if hasattr(self, "use_xtts_ro_var") else USE_XTTS_RO,
                    "translation_enabled": self.translation_enabled_var.get(),
                    "target_language": self.target_language_var.get() if hasattr(self, 'target_language_var') else 'none',
                    "tts_language": self.tts_language_var.get() if hasattr(self, 'tts_language_var') else 'en',
@@ -10907,7 +11049,7 @@ class App:
                 'blur_overlay_intensity': job.get("blur_overlay_intensity", 20)
             }
             # Run in background thread so GUI remains responsive
-            _job_kwargs = {"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor"), "effect_settings": effect_settings, "use_ai_voice": job.get("use_ai_voice", False), "target_language": job.get("target_language", 'none'), "translation_enabled": job.get("translation_enabled", False), "tts_language": job.get("tts_language", 'en'), "caption_text_color": job.get("caption_text_color"), "caption_stroke_color": job.get("caption_stroke_color"), "caption_stroke_width": job.get("caption_stroke_width"), "caption_font_size": job.get("caption_font_size"), "caption_y_offset": job.get("caption_y_offset"), "voice_gain": job.get("voice_gain"), "music_gain": job.get("music_gain")}
+            _job_kwargs = {"custom_top_ratio": job.get("custom_top_ratio"), "custom_bottom_ratio": job.get("custom_bottom_ratio"), "mirror_video": job.get("mirror_video", False), "words_per_caption": job.get("words_per_caption", 2), "use_4k": job.get("use_4k", False), "blur_radius": job.get("blur_radius"), "bg_scale_extra": job.get("bg_scale_extra"), "dim_factor": job.get("dim_factor"), "effect_settings": effect_settings, "use_ai_voice": job.get("use_ai_voice", False), "use_xtts_ro": job.get("use_xtts_ro", globals().get('USE_XTTS_RO', False)), "target_language": job.get("target_language", 'none'), "translation_enabled": job.get("translation_enabled", False), "tts_language": job.get("tts_language", 'en'), "caption_text_color": job.get("caption_text_color"), "caption_stroke_color": job.get("caption_stroke_color"), "caption_stroke_width": job.get("caption_stroke_width"), "caption_font_size": job.get("caption_font_size"), "caption_y_offset": job.get("caption_y_offset"), "voice_gain": job.get("voice_gain"), "music_gain": job.get("music_gain")}
             def _run_and_signal(video=job["video"], voice=job["voice"], music=job["music"], out=job["output"], font=job.get("font"), kw=_job_kwargs, _q=q):
                 try:
                     process_single_job(video, voice, music, out, _q, font, **kw)
@@ -10928,13 +11070,14 @@ class App:
     def _run_single_thread(self, video, voice, music, output, top_ratio, bottom_ratio):
         words_per_caption = self.words_per_caption_var.get()
         use_ai_voice = self.use_ai_voice_var.get()
+        use_xtts_ro = self.use_xtts_ro_var.get() if hasattr(self, "use_xtts_ro_var") else globals().get('USE_XTTS_RO', False)
         target_language = self.target_language_var.get()
         translation_enabled = self.translation_enabled_var.get()
         tts_language = self.tts_language_var.get()
         silence_threshold_ms = self.silence_threshold_var.get()
         voice_gain_val = self.voice_gain_var.get()
         music_gain_val = self.music_gain_var.get()
-        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption, use_ai_voice=use_ai_voice, target_language=target_language, translation_enabled=translation_enabled, tts_language=tts_language, silence_threshold_ms=silence_threshold_ms, voice_gain=voice_gain_val, music_gain=music_gain_val)
+        process_single_job(video, voice, music, output, self.q, custom_top_ratio=top_ratio, custom_bottom_ratio=bottom_ratio, words_per_caption=words_per_caption, use_ai_voice=use_ai_voice, use_xtts_ro=use_xtts_ro, target_language=target_language, translation_enabled=translation_enabled, tts_language=tts_language, silence_threshold_ms=silence_threshold_ms, voice_gain=voice_gain_val, music_gain=music_gain_val)
         self.q.put("[SINGLE_DONE]")
 
     def run_queue(self):
@@ -11766,6 +11909,7 @@ class App:
                 "translation_custom_prompt": self.translation_prompt_var.get() if hasattr(self, 'translation_prompt_var') else "",
                 "openai_api_key": self.openai_key_var.get().strip() if hasattr(self, 'openai_key_var') else "",
                 "use_ai_voice": self.use_ai_voice_var.get(),
+                "use_xtts_ro": self.use_xtts_ro_var.get() if hasattr(self, "use_xtts_ro_var") else USE_XTTS_RO,
                 "tts_language": self.tts_language_var.get(),
                 "tts_voice": self.tts_voice_var.get(),
                 "tts_fallback_voice": self.tts_fallback_voice_var.get() if hasattr(self, 'tts_fallback_voice_var') else "Auto (Default)",
@@ -11881,6 +12025,9 @@ class App:
                     self.openai_key_var.set(saved_key)
                     globals()['OPENAI_API_KEY'] = saved_key
             self.use_ai_voice_var.set(preset_data.get("use_ai_voice", USE_AI_VOICE_REPLACEMENT))
+            if hasattr(self, 'use_xtts_ro_var'):
+                self.use_xtts_ro_var.set(preset_data.get("use_xtts_ro", USE_XTTS_RO))
+                globals()['USE_XTTS_RO'] = preset_data.get("use_xtts_ro", USE_XTTS_RO)
             self.tts_language_var.set(preset_data.get("tts_language", TTS_LANGUAGE))
             # Rebuild dropdown for language first, then restore selected voice + sync global
             self.update_voice_dropdown(preset_data.get("tts_language", TTS_LANGUAGE))
@@ -12019,6 +12166,9 @@ class App:
                     self.openai_key_var.set(saved_key)
                     globals()['OPENAI_API_KEY'] = saved_key
             self.use_ai_voice_var.set(preset_data.get("use_ai_voice", USE_AI_VOICE_REPLACEMENT))
+            if hasattr(self, 'use_xtts_ro_var'):
+                self.use_xtts_ro_var.set(preset_data.get("use_xtts_ro", USE_XTTS_RO))
+                globals()['USE_XTTS_RO'] = preset_data.get("use_xtts_ro", USE_XTTS_RO)
             self.tts_language_var.set(preset_data.get("tts_language", TTS_LANGUAGE))
             # Rebuild dropdown for language first, then restore selected voice + sync global
             self.update_voice_dropdown(preset_data.get("tts_language", TTS_LANGUAGE))
@@ -12136,6 +12286,9 @@ class App:
             self.translation_enabled_var.set(TRANSLATION_ENABLED)
             self.target_language_var.set(TARGET_LANGUAGE)
             self.use_ai_voice_var.set(USE_AI_VOICE_REPLACEMENT)
+            if hasattr(self, 'use_xtts_ro_var'):
+                self.use_xtts_ro_var.set(USE_XTTS_RO)
+                globals()['USE_XTTS_RO'] = USE_XTTS_RO
             self.tts_language_var.set(TTS_LANGUAGE)
             self.tts_voice_var.set('Auto (Default)')
             self.silence_threshold_var.set(300)
@@ -12201,6 +12354,598 @@ class App:
             messagebox.showinfo("Reset Complete", "All settings have been reset to their default values.")
         except Exception as e:
             messagebox.showerror("Reset Failed", f"Could not reset settings: {e}")
+
+    def _build_voice_clone_tab(self, parent):
+        """Build XTTS voice-clone + text-to-speech playground UI."""
+        import json
+        import shutil
+        import threading
+        from pathlib import Path
+        from tkinter import filedialog, messagebox
+
+        SCRIPT_DIR = Path(__file__).resolve().parent
+        VOICES_DIR = SCRIPT_DIR / "voices"
+        CONFIG_PATH = SCRIPT_DIR / "xtts_ro_config.json"
+
+        DEFAULT_CFG = {
+            "voice_mode": "builtin",
+            "active_voice": "",
+            "speaker_ref_path": "",
+            "builtin_speaker": "Claribel Dervla",
+            "language": "ro",
+        }
+
+        def _load_cfg():
+            cfg = dict(DEFAULT_CFG)
+            if CONFIG_PATH.exists():
+                try:
+                    with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                        user_cfg = json.load(f)
+                    if isinstance(user_cfg, dict):
+                        cfg.update(user_cfg)
+                except Exception:
+                    pass
+            return cfg
+
+        def _save_cfg(cfg):
+            merged = _load_cfg()
+            merged.update(cfg)
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                json.dump(merged, f, indent=4, ensure_ascii=False)
+
+        def _get_custom_voices():
+            VOICES_DIR.mkdir(exist_ok=True)
+            return [p.stem for p in sorted(VOICES_DIR.iterdir()) if p.suffix.lower() == ".wav"]
+
+        def _get_builtin_voices():
+            try:
+                from xtts_ro import list_builtin_speakers
+                voices = list_builtin_speakers()
+                if voices:
+                    return voices
+            except Exception:
+                pass
+            return ["Claribel Dervla"]
+
+        def _set_active_custom_voice(voice_name):
+            cfg = _load_cfg()
+            cfg["voice_mode"] = "custom"
+            cfg["active_voice"] = voice_name
+            cfg["speaker_ref_path"] = str(VOICES_DIR / f"{voice_name}.wav")
+            _save_cfg(cfg)
+
+        def _set_active_builtin_voice(voice_name):
+            cfg = _load_cfg()
+            cfg["voice_mode"] = "builtin"
+            cfg["builtin_speaker"] = voice_name
+            _save_cfg(cfg)
+
+        def _sync_mode_widgets():
+            mode = voice_mode_var.get()
+            is_custom = mode == "custom"
+            lb_voices.config(state="normal" if is_custom else "disabled")
+            btn_activate_custom.config(state="normal" if is_custom else "disabled")
+            builtin_combo.config(state="disabled" if is_custom else "readonly")
+
+        def _apply_voice_mode():
+            mode = voice_mode_var.get()
+            cfg = _load_cfg()
+            cfg["voice_mode"] = mode
+            if mode == "custom":
+                voices = _get_custom_voices()
+                active = custom_voice_var.get().strip()
+                if active in voices:
+                    cfg["active_voice"] = active
+                    cfg["speaker_ref_path"] = str(VOICES_DIR / f"{active}.wav")
+                elif voices:
+                    cfg["active_voice"] = voices[0]
+                    cfg["speaker_ref_path"] = str(VOICES_DIR / f"{voices[0]}.wav")
+                    custom_voice_var.set(voices[0])
+                else:
+                    cfg["active_voice"] = ""
+                    cfg["speaker_ref_path"] = ""
+            else:
+                builtin_name = builtin_voice_var.get().strip()
+                if not builtin_name:
+                    builtin = _get_builtin_voices()
+                    builtin_name = builtin[0] if builtin else "Claribel Dervla"
+                    builtin_voice_var.set(builtin_name)
+                cfg["builtin_speaker"] = builtin_name
+            _save_cfg(cfg)
+            _sync_mode_widgets()
+            _refresh_voice_list()
+
+        def _refresh_voice_list():
+            voices = _get_custom_voices()
+            cfg = _load_cfg()
+            active = cfg.get("active_voice", "")
+            voice_mode = cfg.get("voice_mode", "builtin")
+
+            lb_voices.delete(0, tk.END)
+            selected_index = None
+            for idx, v in enumerate(voices):
+                marker = " ✔ ACTIVA" if (voice_mode == "custom" and v == active) else ""
+                lb_voices.insert(tk.END, f"{v}{marker}")
+                if v == active:
+                    selected_index = idx
+            if selected_index is not None:
+                lb_voices.selection_set(selected_index)
+                lb_voices.see(selected_index)
+
+            custom_voice_var.set(active if active in voices else "")
+
+            builtin_voices = _get_builtin_voices()
+            builtin_combo["values"] = builtin_voices
+            builtin_cfg = cfg.get("builtin_speaker", "") or (builtin_voices[0] if builtin_voices else "Claribel Dervla")
+            builtin_voice_var.set(builtin_cfg)
+
+            voice_mode_var.set("custom" if voice_mode == "custom" else "builtin")
+            _sync_mode_widgets()
+
+            if voice_mode == "custom":
+                lbl_active.config(text=f"Voce activa: {active if active else '(nicio voce clonata selectata)'}")
+            else:
+                lbl_active.config(text=f"Voce activa: {builtin_voice_var.get()} (XTTS normal)")
+
+        def _on_mode_change():
+            _apply_voice_mode()
+
+        def _on_add_voice():
+            wav_path = filedialog.askopenfilename(
+                title="Selecteaza fisier WAV pentru clonare",
+                filetypes=[("WAV files", "*.wav"), ("All files", "*.*")]
+            )
+            if not wav_path:
+                return
+            name = tk.simpledialog.askstring("Nume voce", "Introdu un nume pentru vocea clonata:", parent=parent)
+            if not name or not name.strip():
+                return
+            safe_name = name.strip().replace(" ", "_")
+            dest = VOICES_DIR / f"{safe_name}.wav"
+            VOICES_DIR.mkdir(exist_ok=True)
+            try:
+                shutil.copy2(wav_path, str(dest))
+            except Exception as e:
+                messagebox.showerror("Eroare", f"Nu s-a putut copia fisierul:\n{e}")
+                return
+
+            cfg = _load_cfg()
+            if not cfg.get("active_voice"):
+                _set_active_custom_voice(safe_name)
+                voice_mode_var.set("custom")
+            _refresh_voice_list()
+            messagebox.showinfo("Succes", f"Vocea '{safe_name}' a fost clonata cu succes.")
+
+        def _on_activate_custom_voice():
+            sel = lb_voices.curselection()
+            if not sel:
+                messagebox.showwarning("Selectie", "Selecteaza o voce clonata din lista.")
+                return
+            entry = lb_voices.get(sel[0])
+            voice_name = entry.split(" ✔")[0].strip()
+            voices = _get_custom_voices()
+            if voice_name not in voices:
+                messagebox.showerror("Eroare", f"Vocea '{voice_name}' nu a fost gasita.")
+                return
+            custom_voice_var.set(voice_name)
+            voice_mode_var.set("custom")
+            _set_active_custom_voice(voice_name)
+            _refresh_voice_list()
+
+        def _on_delete_voice():
+            sel = lb_voices.curselection()
+            if not sel:
+                messagebox.showwarning("Selectie", "Selecteaza o voce clonata din lista.")
+                return
+            entry = lb_voices.get(sel[0])
+            voice_name = entry.split(" ✔")[0].strip()
+            if not messagebox.askyesno("Confirmare", f"Stergi vocea clonata '{voice_name}'?"):
+                return
+            dest = VOICES_DIR / f"{voice_name}.wav"
+            try:
+                dest.unlink(missing_ok=True)
+            except Exception as e:
+                messagebox.showerror("Eroare", f"Nu s-a putut sterge:\n{e}")
+                return
+            cfg = _load_cfg()
+            if cfg.get("active_voice") == voice_name:
+                cfg["active_voice"] = ""
+                cfg["speaker_ref_path"] = ""
+                cfg["voice_mode"] = "builtin"
+                _save_cfg(cfg)
+                voice_mode_var.set("builtin")
+            _refresh_voice_list()
+
+        def _on_activate_builtin():
+            builtin_name = builtin_voice_var.get().strip()
+            if not builtin_name:
+                messagebox.showwarning("Selectie", "Selecteaza o voce XTTS normala.")
+                return
+            _set_active_builtin_voice(builtin_name)
+            voice_mode_var.set("builtin")
+            _refresh_voice_list()
+
+        def _on_generate_audio():
+            text = txt_input.get("1.0", "end-1c").strip()
+            if not text:
+                messagebox.showwarning("Text lipsa", "Introdu textul pe care vrei sa il sintetizezi.")
+                return
+
+            out_path = filedialog.asksaveasfilename(
+                title="Salveaza audio XTTS",
+                defaultextension=".wav",
+                filetypes=[("WAV files", "*.wav"), ("All files", "*.*")],
+                initialfile="xtts_r_output.wav",
+            )
+            if not out_path:
+                return
+
+            mode = voice_mode_var.get()
+            cfg = _load_cfg()
+            if mode == "custom":
+                voices = _get_custom_voices()
+                selected_voice = custom_voice_var.get().strip()
+                if not selected_voice and lb_voices.curselection():
+                    selected_voice = lb_voices.get(lb_voices.curselection()[0]).split(" ✔")[0].strip()
+                if selected_voice not in voices:
+                    messagebox.showwarning("Voce lipsa", "Selecteaza o voce clonata valida sau cloneaza una noua.")
+                    return
+                cfg["voice_mode"] = "custom"
+                cfg["active_voice"] = selected_voice
+                cfg["speaker_ref_path"] = str(VOICES_DIR / f"{selected_voice}.wav")
+            else:
+                selected_builtin = builtin_voice_var.get().strip()
+                if not selected_builtin:
+                    messagebox.showwarning("Voce lipsa", "Selecteaza o voce XTTS normala.")
+                    return
+                cfg["voice_mode"] = "builtin"
+                cfg["builtin_speaker"] = selected_builtin
+            _save_cfg(cfg)
+
+            btn_generate.config(state="disabled")
+            lbl_generate_status.config(text="Generez audio XTTS-R...")
+
+            def _worker():
+                result = None
+                err = None
+                try:
+                    from xtts_ro import generate_xtts_ro
+                    result = generate_xtts_ro(text, output_path=out_path, config=cfg)
+                except Exception as e:
+                    err = e
+
+                def _finish():
+                    btn_generate.config(state="normal")
+                    if result:
+                        lbl_generate_status.config(text=f"Gata: {result}")
+                        messagebox.showinfo("Succes", f"Audio generat:\n{result}")
+                    else:
+                        lbl_generate_status.config(text="Generare esuata.")
+                        import traceback as _tb
+                        err_msg = f"Nu s-a putut genera audio:\n{err}" if err else "Nu s-a putut genera audio."
+                        try:
+                            self.log_widget.config(state="normal")
+                            self.log_widget.insert(tk.END, f"\n[XTTS ERROR] {err_msg}\n")
+                            self.log_widget.config(state="disabled")
+                            self.log_widget.see(tk.END)
+                        except Exception:
+                            pass
+
+                self.root.after(0, _finish)
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        # ---- UI layout — GenAI Pro style (left text | right settings) ----
+        outer = tk.Frame(parent, bg=self.BG_DARK)
+        outer.pack(fill="both", expand=True)
+
+        cfg_init = _load_cfg()
+        voice_mode_var = tk.StringVar(value="custom" if cfg_init.get("voice_mode") == "custom" else "builtin")
+        custom_voice_var = tk.StringVar(value=cfg_init.get("active_voice", ""))
+        builtin_voice_var = tk.StringVar(value=cfg_init.get("builtin_speaker", "Claribel Dervla"))
+        speed_var = tk.DoubleVar(value=float(cfg_init.get("speed", 1.0)))
+        temperature_var = tk.DoubleVar(value=float(cfg_init.get("temperature", 0.65)))
+        top_p_var = tk.DoubleVar(value=float(cfg_init.get("top_p", 0.85)))
+
+        btn_kw = dict(font=("Segoe UI", 10), relief="flat", cursor="hand2", padx=10, pady=4)
+
+        # ── Left panel: text area ──────────────────────────────────────────
+        left_panel = tk.Frame(outer, bg=self.BG_DARK)
+        left_panel.pack(side="left", fill="both", expand=True)
+
+        txt_input = tk.Text(
+            left_panel,
+            wrap="word",
+            bg="#161b22",
+            fg="#c9d1d9",
+            insertbackground="#c9d1d9",
+            relief="flat",
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground="#30363d",
+            font=("Segoe UI", 11),
+        )
+        txt_input.pack(fill="both", expand=True)
+
+        # Placeholder
+        _PLACEHOLDER = "Introdu textul pentru a genera vocea..."
+        txt_input.insert("1.0", _PLACEHOLDER)
+        txt_input.config(fg="#555e6b")
+
+        def _on_text_focus_in(event):
+            if txt_input.get("1.0", "end-1c") == _PLACEHOLDER:
+                txt_input.delete("1.0", tk.END)
+                txt_input.config(fg="#c9d1d9")
+
+        def _on_text_focus_out(event):
+            if not txt_input.get("1.0", "end-1c").strip():
+                txt_input.insert("1.0", _PLACEHOLDER)
+                txt_input.config(fg="#555e6b")
+            _update_char_count()
+
+        def _update_char_count(event=None):
+            content = txt_input.get("1.0", "end-1c")
+            if content == _PLACEHOLDER:
+                lbl_char_count.config(text="0 caractere")
+            else:
+                lbl_char_count.config(text=f"{len(content)} caractere")
+
+        txt_input.bind("<FocusIn>", _on_text_focus_in)
+        txt_input.bind("<FocusOut>", _on_text_focus_out)
+        txt_input.bind("<KeyRelease>", _update_char_count)
+
+        bottom_bar = tk.Frame(left_panel, bg="#0d1117", pady=6)
+        bottom_bar.pack(fill="x")
+
+        btn_generate = tk.Button(
+            bottom_bar,
+            text="🎧 Genereaza vocea",
+            bg="#21262d",
+            fg="#c9d1d9",
+            command=_on_generate_audio,
+            font=("Segoe UI", 11),
+            relief="flat",
+            cursor="hand2",
+            padx=16,
+            pady=6,
+        )
+        btn_generate.pack(side="left", padx=(10, 0))
+
+        lbl_char_count = tk.Label(bottom_bar, text="0 caractere", bg="#0d1117", fg="#8b949e", font=("Segoe UI", 9))
+        lbl_char_count.pack(side="left", padx=(12, 0))
+
+        lbl_generate_status = tk.Label(bottom_bar, text="", bg="#0d1117", fg="#8b949e", font=("Segoe UI", 9))
+        lbl_generate_status.pack(side="left", padx=(12, 0))
+
+        # Divider line
+        tk.Frame(outer, bg="#30363d", width=1).pack(side="left", fill="y")
+
+        # ── Right panel: settings ─────────────────────────────────────────
+        right_panel = tk.Frame(outer, bg=self.BG_DARK, width=300)
+        right_panel.pack(side="left", fill="y", padx=(0, 0))
+        right_panel.pack_propagate(False)
+
+        rp = tk.Frame(right_panel, bg=self.BG_DARK)
+        rp.pack(fill="both", expand=True, padx=14, pady=12)
+
+        def _section_label(text):
+            tk.Label(rp, text=text, bg=self.BG_DARK, fg="#c9d1d9",
+                     font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(10, 4))
+
+        # Voice source radio buttons
+        _section_label("Voce")
+        lbl_active = tk.Label(rp, text="...", bg=self.BG_DARK, fg="#8b949e", font=("Segoe UI", 9),
+                              wraplength=260, justify="left")
+        lbl_active.pack(anchor="w", pady=(0, 4))
+
+        mode_frame = tk.Frame(rp, bg=self.BG_DARK)
+        mode_frame.pack(fill="x", pady=(0, 4))
+        tk.Radiobutton(mode_frame, text="XTTS-R clonata", variable=voice_mode_var, value="custom",
+                       command=_on_mode_change, bg=self.BG_DARK, fg="#c9d1d9",
+                       selectcolor="#21262d", activebackground=self.BG_DARK,
+                       activeforeground="#ffffff").pack(side="left", padx=(0, 10))
+        tk.Radiobutton(mode_frame, text="XTTS normal", variable=voice_mode_var, value="builtin",
+                       command=_on_mode_change, bg=self.BG_DARK, fg="#c9d1d9",
+                       selectcolor="#21262d", activebackground=self.BG_DARK,
+                       activeforeground="#ffffff").pack(side="left")
+
+        # Custom voice list
+        list_frame = tk.Frame(rp, bg=self.BG_DARK)
+        list_frame.pack(fill="x", pady=(0, 4))
+        scrollbar = tk.Scrollbar(list_frame)
+        scrollbar.pack(side="right", fill="y")
+        lb_voices = tk.Listbox(
+            list_frame,
+            yscrollcommand=scrollbar.set,
+            bg="#161b22",
+            fg="#c9d1d9",
+            selectbackground=self.ACCENT_BLUE,
+            selectforeground="#ffffff",
+            font=("Segoe UI", 10),
+            borderwidth=0,
+            highlightthickness=1,
+            highlightbackground="#30363d",
+            activestyle="none",
+            height=4,
+        )
+        lb_voices.pack(side="left", fill="both", expand=True)
+        scrollbar.config(command=lb_voices.yview)
+
+        clone_btn_frame = tk.Frame(rp, bg=self.BG_DARK)
+        clone_btn_frame.pack(fill="x", pady=(4, 2))
+        tk.Button(clone_btn_frame, text="➕ Cloneaza", bg=self.ACCENT_GREEN, fg="#ffffff",
+                  command=_on_add_voice, **btn_kw).pack(side="left", padx=(0, 4))
+        btn_activate_custom = tk.Button(clone_btn_frame, text="✔ Activeaza", bg=self.ACCENT_BLUE,
+                                        fg="#ffffff", command=_on_activate_custom_voice, **btn_kw)
+        btn_activate_custom.pack(side="left", padx=(0, 4))
+        tk.Button(clone_btn_frame, text="🗑", bg=self.ACCENT_RED, fg="#ffffff",
+                  command=_on_delete_voice, **btn_kw).pack(side="left")
+        tk.Button(clone_btn_frame, text="↻", bg="#21262d", fg="#c9d1d9",
+                  command=_refresh_voice_list, **btn_kw).pack(side="right")
+
+        # Builtin voice selector
+        builtin_frame = tk.Frame(rp, bg=self.BG_DARK)
+        builtin_frame.pack(fill="x", pady=(4, 2))
+        builtin_combo = ttk.Combobox(builtin_frame, textvariable=builtin_voice_var, state="readonly", width=22)
+        builtin_combo.pack(side="left", padx=(0, 6))
+        tk.Button(builtin_frame, text="Activeaza", bg="#21262d", fg="#c9d1d9",
+                  command=_on_activate_builtin, **btn_kw).pack(side="left")
+
+        # Separator
+        tk.Frame(rp, bg="#30363d", height=1).pack(fill="x", pady=(10, 4))
+
+        # Speed slider
+        _section_label("Viteza")
+        speed_row = tk.Frame(rp, bg=self.BG_DARK)
+        speed_row.pack(fill="x")
+        spd_lbl = tk.Label(speed_row, text="1.00", bg=self.BG_DARK, fg="#8b949e", font=("Segoe UI", 9), width=4)
+        spd_lbl.pack(side="right")
+        spd_slider = tk.Scale(
+            speed_row, from_=0.5, to=2.0, resolution=0.05, orient="horizontal",
+            variable=speed_var, bg=self.BG_DARK, fg="#c9d1d9", troughcolor="#30363d",
+            highlightthickness=0, showvalue=False, length=200,
+            command=lambda v: spd_lbl.config(text=f"{float(v):.2f}"),
+        )
+        spd_slider.pack(side="left", fill="x", expand=True)
+
+        speed_sub = tk.Frame(rp, bg=self.BG_DARK)
+        speed_sub.pack(fill="x")
+        tk.Label(speed_sub, text="Mai lent", bg=self.BG_DARK, fg="#555e6b", font=("Segoe UI", 8)).pack(side="left")
+        tk.Label(speed_sub, text="Mai rapid", bg=self.BG_DARK, fg="#555e6b", font=("Segoe UI", 8)).pack(side="right")
+
+        # Temperature slider
+        _section_label("Variabilitate (Temperature)")
+        temp_row = tk.Frame(rp, bg=self.BG_DARK)
+        temp_row.pack(fill="x")
+        temp_lbl = tk.Label(temp_row, text="0.65", bg=self.BG_DARK, fg="#8b949e", font=("Segoe UI", 9), width=4)
+        temp_lbl.pack(side="right")
+        temp_slider = tk.Scale(
+            temp_row, from_=0.1, to=1.0, resolution=0.05, orient="horizontal",
+            variable=temperature_var, bg=self.BG_DARK, fg="#c9d1d9", troughcolor="#30363d",
+            highlightthickness=0, showvalue=False, length=200,
+            command=lambda v: temp_lbl.config(text=f"{float(v):.2f}"),
+        )
+        temp_slider.pack(side="left", fill="x", expand=True)
+
+        temp_sub = tk.Frame(rp, bg=self.BG_DARK)
+        temp_sub.pack(fill="x")
+        tk.Label(temp_sub, text="Stabil", bg=self.BG_DARK, fg="#555e6b", font=("Segoe UI", 8)).pack(side="left")
+        tk.Label(temp_sub, text="Creativ", bg=self.BG_DARK, fg="#555e6b", font=("Segoe UI", 8)).pack(side="right")
+
+        # Top-P slider
+        _section_label("Diversitate (Top-P)")
+        topp_row = tk.Frame(rp, bg=self.BG_DARK)
+        topp_row.pack(fill="x")
+        topp_lbl = tk.Label(topp_row, text="0.85", bg=self.BG_DARK, fg="#8b949e", font=("Segoe UI", 9), width=4)
+        topp_lbl.pack(side="right")
+        topp_slider = tk.Scale(
+            topp_row, from_=0.1, to=1.0, resolution=0.05, orient="horizontal",
+            variable=top_p_var, bg=self.BG_DARK, fg="#c9d1d9", troughcolor="#30363d",
+            highlightthickness=0, showvalue=False, length=200,
+            command=lambda v: topp_lbl.config(text=f"{float(v):.2f}"),
+        )
+        topp_slider.pack(side="left", fill="x", expand=True)
+
+        # Reset button
+        tk.Frame(rp, bg="#30363d", height=1).pack(fill="x", pady=(10, 4))
+        def _reset_sliders():
+            speed_var.set(1.0)
+            temperature_var.set(0.65)
+            top_p_var.set(0.85)
+            spd_lbl.config(text="1.00")
+            temp_lbl.config(text="0.65")
+            topp_lbl.config(text="0.85")
+
+        tk.Button(rp, text="↺ Reseteaza valorile", bg="#21262d", fg="#8b949e",
+                  command=_reset_sliders, font=("Segoe UI", 9), relief="flat",
+                  cursor="hand2").pack(anchor="e", pady=(0, 4))
+
+        def _on_generate_audio_with_sliders():
+            text = txt_input.get("1.0", "end-1c").strip()
+            if not text or text == _PLACEHOLDER:
+                messagebox.showwarning("Text lipsa", "Introdu textul pe care vrei sa il sintetizezi.")
+                return
+
+            out_path = filedialog.asksaveasfilename(
+                title="Salveaza audio XTTS",
+                defaultextension=".wav",
+                filetypes=[("WAV files", "*.wav"), ("All files", "*.*")],
+                initialfile="xtts_output.wav",
+            )
+            if not out_path:
+                return
+
+            mode = voice_mode_var.get()
+            cfg = _load_cfg()
+            if mode == "custom":
+                voices = _get_custom_voices()
+                selected_voice = custom_voice_var.get().strip()
+                if not selected_voice and lb_voices.curselection():
+                    selected_voice = lb_voices.get(lb_voices.curselection()[0]).split(" ✔")[0].strip()
+                if selected_voice not in voices:
+                    messagebox.showwarning("Voce lipsa", "Selecteaza o voce clonata valida sau cloneaza una noua.")
+                    return
+                cfg["voice_mode"] = "custom"
+                cfg["active_voice"] = selected_voice
+                cfg["speaker_ref_path"] = str(VOICES_DIR / f"{selected_voice}.wav")
+            else:
+                selected_builtin = builtin_voice_var.get().strip()
+                if not selected_builtin:
+                    messagebox.showwarning("Voce lipsa", "Selecteaza o voce XTTS normala.")
+                    return
+                cfg["voice_mode"] = "builtin"
+                cfg["builtin_speaker"] = selected_builtin
+            cfg["temperature"] = round(temperature_var.get(), 2)
+            cfg["top_p"] = round(top_p_var.get(), 2)
+            _save_cfg(cfg)
+
+            speed_val = round(speed_var.get(), 2)
+            btn_generate.config(state="disabled")
+            lbl_generate_status.config(text="⏳ Generez audio...")
+
+            def _worker():
+                result = None
+                err = None
+                err_detail = ""
+                try:
+                    from xtts_ro import generate_xtts_ro
+                    import traceback as _tb
+                    log_lines = []
+                    def _log(msg):
+                        log_lines.append(msg)
+                    result = generate_xtts_ro(text, output_path=out_path, config=cfg,
+                                              log=_log, speed=speed_val)
+                    if not result:
+                        err_detail = "\n".join(log_lines[-20:]) if log_lines else ""
+                except Exception as e:
+                    err = e
+                    import traceback as _tb
+                    err_detail = _tb.format_exc()
+
+                def _finish():
+                    btn_generate.config(state="normal")
+                    if result:
+                        lbl_generate_status.config(text=f"✅ Gata: {result}")
+                        messagebox.showinfo("Succes", f"Audio generat:\n{result}")
+                    else:
+                        lbl_generate_status.config(text="❌ Generare esuata.")
+                        detail = f"\n\nDetalii:\n{err_detail}" if err_detail else ""
+                        err_msg = f"Nu s-a putut genera audio:\n{err}{detail}" if err else f"Nu s-a putut genera audio.{detail}"
+                        try:
+                            self.log_widget.config(state="normal")
+                            self.log_widget.insert(tk.END, f"\n[XTTS ERROR] {err_msg}\n")
+                            self.log_widget.config(state="disabled")
+                            self.log_widget.see(tk.END)
+                        except Exception:
+                            pass
+
+                self.root.after(0, _finish)
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        btn_generate.config(command=_on_generate_audio_with_sliders)
+
+        _refresh_voice_list()
 
     def poll_queue(self):
         try:

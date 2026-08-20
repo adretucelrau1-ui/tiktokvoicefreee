@@ -1,0 +1,9 @@
+TTS
+transformers==4.33.3
+torch
+torchvision
+torchaudio
+soundfile
+scipy
+openai-whisper
+huggingface_hub
